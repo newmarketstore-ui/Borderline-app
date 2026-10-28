@@ -1,0 +1,45 @@
+# DigitalOcean App Platform 规格（老板 10/28 定平台）。
+# 用法：doctl apps create --spec .do/app.yaml ；更新：doctl apps update <id> --spec .do/app.yaml
+# 占位：<GITHUB_REPO> 换成老板建好的仓库名（newmarketstore-ui/<name>）。
+# 环境变量的值不写在这里：SECRET 类型在 DO 控制台或 doctl 里单独设置，永不入库。
+name: borderline-app
+region: tor
+services:
+  - name: web
+    github:
+      repo: newmarketstore-ui/<GITHUB_REPO>
+      branch: main
+      deploy_on_push: true
+    dockerfile_path: Dockerfile
+    http_port: 3000
+    instance_count: 1
+    instance_size_slug: apps-s-1vcpu-2gb   # $25/月；队列 pg-boss 跑在同一进程里，量大再拆 worker
+    health_check:
+      http_path: /healthz
+      initial_delay_seconds: 20
+      period_seconds: 30
+    envs:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: "3000"
+      - key: SHOPIFY_API_KEY
+        value: c3c85ae5dff56888ac2834cb8b31f7d6   # 公开的 client_id，不是密钥
+      - key: SHOPIFY_APP_URL
+        value: ${APP_URL}                          # 首次部署后换成自定义域名
+      - key: SCOPES
+        value: read_all_orders,read_analytics,read_customers,read_inventory,read_locations,read_orders,read_product_feeds,read_product_listings,read_products,read_reports,write_customers,write_discounts,write_orders
+      - key: SHOPIFY_API_SECRET
+        type: SECRET
+        value: ""                                  # 部署时在 DO 里填
+      - key: DATABASE_URL
+        type: SECRET
+        value: ""                                  # Supabase 会话池 5432
+      - key: MANUAL_METRICS_EXPORT_TOKEN
+        type: SECRET
+        value: ""
+      - key: PGBOSS_SSL
+        value: require
+alerts:
+  - rule: DEPLOYMENT_FAILED
+  - rule: DOMAIN_FAILED
