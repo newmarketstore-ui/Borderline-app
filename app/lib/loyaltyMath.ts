@@ -31,9 +31,11 @@ export type EarnRules = {
   earnOnShipping: boolean;
   earnOnTax: boolean;
   tierMultiplier: number; // standard = 1；paid = LoyaltyConfig.paidTierMultiplier
+  // 有任何折扣分摊（行折扣或订单级折扣分摊到该行，包括我们自己的积分码）的行整行不计分（Appstle disablePointsForDiscountedProduct）
+  excludeDiscountedItems?: boolean;
 };
 
-export type ExclusionReason = "gift_card" | "product_type" | "tag" | null;
+export type ExclusionReason = "gift_card" | "product_type" | "tag" | "discounted" | null;
 
 export type EarnLineResult = {
   lineId: string;
@@ -89,6 +91,7 @@ export function exclusionFor(line: EarnLine, rules: EarnRules): ExclusionReason 
   if (line.productType && types.has(norm(line.productType))) return "product_type";
   const tags = new Set(rules.excludedTags.map(norm).filter(Boolean));
   if ((line.tags ?? []).some((t) => tags.has(norm(t)))) return "tag";
+  if (rules.excludeDiscountedItems && line.discountCents > 0) return "discounted";
   return null;
 }
 
