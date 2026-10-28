@@ -69,6 +69,51 @@ This template comes pre-configured with examples of:
 
 Please read the [documentation for @shopify/shopify-app-react-router](https://shopify.dev/docs/api/shopify-app-react-router) to see what other API's are available.
 
+## Loyalty module
+
+Points ledger that replaces Appstle Loyalty (design: `reports/BorderlineAI应用_会员_打蜡服务_AI客服_架构方案_2026-10-27.md` §1, §2, §7 in the knowledge base).
+
+**Architecture**
+
+```
+Shopify webhook ─► app/routes/webhooks.*.tsx ─► landWebhook()            (app/models/webhookEvents.server.ts)
+                     HMAC check, insert WebhookEvent, enqueue, 200 within ~3 s
+pg-boss (schema pgboss, same DATABASE_URL) ─► app/jobs/worker.server.ts  (started from entry.server.tsx)
+  loyalty.earn            orders/paid       → earn ledger row + Member upsert
+  loyalty.refund_reverse  refunds/create    → proportional refund_reverse row (balance may go negative)
+  loyalty.sync_customer   customers/update  → refresh member name / email / phone
+  loyalty.sync_balance    after any change  → customer metafield borderline.points_balance (number_integer)
+  gdpr.process            customers/data_request, customers/redact, shop/redact
+  loyalty.sweep           every 10 min      → requeue events stuck in "received", mature pending points
+Staff UI: /app/loyalty, /app/loyalty/:memberId (ledger + adjust), /app/loyalty/settings (LoyaltyConfig)
+```
+
+- Point maths are pure functions in `app/lib/loyaltyMath.ts` (`computeEarnPoints`, `computeRefundReversal`); payload parsing is in `app/lib/shopifyPayload.ts`. Amounts are integer cents in shop currency; points are floored to whole points with BigInt fixed-point arithmetic.
+- `orders/create` is stored only (no points). Gift cards never earn; product types / tags in the settings are excluded (looked up via the Admin API only when exclusions are configured). Orders without a customer (anonymous POS) and test orders earn nothing.
+- Jobs use the shop's offline session (`sessionStorage.findSessionsByShop` + `unauthenticated.admin`, which refreshes expiring offline tokens).
+- `JOBS_DISABLED=1` stops this process from running workers (it can still enqueue). `PGBOSS_POOL_MAX` (default 3), `PGBOSS_SSL=require` and `PGBOSS_DATABASE_URL` are optional overrides.
+
+**Idempotency**
+
+1. Webhook level: `WebhookEvent.webhookId` is unique (`X-Shopify-Webhook-Id`); a retried delivery hits the unique constraint and gets a plain 200.
+2. Ledger level: `PointsLedger` is append-only with `UNIQUE (type, referenceId)`: earn = order GID, refund_reverse = refund GID, staff adjust = `staff_adjust:<form key>`. Postgres treats NULLs as distinct, so only rows with a referenceId are protected; every automatic row has one.
+3. Each write locks the member row (`SELECT … FOR UPDATE`) inside a transaction, inserts the row and recomputes `balanceCached` / `pendingCached` from the ledger sum, so the caches can always be rebuilt from the ledger.
+4. Refund reversal is cumulative: target = floor(earned × cumulative refunded eligible ÷ original eligible), minus what was already reversed, so several partial refunds reverse exactly what the order earned.
+
+**Tests**
+
+```shell
+npx vitest run      # or: npm test
+npm run typecheck
+npm run lint
+```
+
+**Applying the migration in production**
+
+Migrations are plain SQL under `prisma/migrations/`. `npm run setup` (`prisma generate && prisma migrate deploy`) runs on container start (`docker-start`) and applies pending migrations, including `20261028120000_loyalty_foundation` (new tables only). pg-boss creates its own `pgboss` schema on first start. Never run `prisma migrate dev` / `db push` against `DATABASE_URL`: it is the production database.
+
+**Before go-live**: run `shopify app deploy` so the new scopes (`read_customers, write_customers, write_discounts, write_orders`) and webhook subscriptions take effect, then have the merchant re-authorise; set the host's `SCOPES` env var to the same list; request protected customer data access (name, email, phone) in the Partner Dashboard, otherwise Shopify rejects the orders/* and customers/* subscriptions; keep one machine always on (no suspend) so workers and the 10-minute sweep keep running.
+
 ## Shopify Dev MCP
 
 This template is configured with the Shopify Dev MCP. This instructs [Cursor](https://cursor.com/), [GitHub Copilot](https://github.com/features/copilot) and [Claude Code](https://claude.com/product/claude-code) and [Google Gemini CLI](https://github.com/google-gemini/gemini-cli) to use the Shopify Dev MCP.
