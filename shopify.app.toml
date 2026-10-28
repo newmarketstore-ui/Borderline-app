@@ -7,7 +7,7 @@ embedded = true
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "read_all_orders,read_analytics,read_inventory,read_locations,read_orders,read_product_feeds,read_product_listings,read_products,read_reports"
+scopes = "read_all_orders,read_analytics,read_customers,read_inventory,read_locations,read_orders,read_product_feeds,read_product_listings,read_products,read_reports,write_customers,write_discounts,write_orders"
 optional_scopes = [ ]
 use_legacy_install_flow = false
 
@@ -21,6 +21,36 @@ api_version = "2026-04"
   [[webhooks.subscriptions]]
   uri = "/webhooks/app/scopes_update"
   topics = [ "app/scopes_update" ]
+
+  # 会员积分（loyalty）：全部先落库 WebhookEvent 再交给 pg-boss 异步处理
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/orders/paid"
+  topics = [ "orders/paid" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/orders/create"
+  topics = [ "orders/create" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/refunds/create"
+  topics = [ "refunds/create" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/customers/update"
+  topics = [ "customers/update" ]
+
+  # GDPR 必备（compliance topics）
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/customers/data_request"
+  compliance_topics = [ "customers/data_request" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/customers/redact"
+  compliance_topics = [ "customers/redact" ]
+
+  [[webhooks.subscriptions]]
+  uri = "/webhooks/shop/redact"
+  compliance_topics = [ "shop/redact" ]
 
 [auth]
 redirect_urls = [
