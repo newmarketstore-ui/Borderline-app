@@ -5,23 +5,38 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { useAppBridge } from "@shopify/app-bridge-react";
 
 import { authenticate } from "../shopify.server";
-import { getLoyaltySettings, parseSettingsForm, saveLoyaltySettings, staffIdentity } from "../models/loyalty.server";
+import {
+  getLoyaltySettings,
+  getRedeemWindows,
+  parseSettingsForm,
+  parseWindowsJson,
+  saveLoyaltySettings,
+  saveRedeemWindows,
+  staffIdentity,
+} from "../models/loyalty.server";
+import { formatCents, redeemAmountCents, REDEEM_ROUNDINGS, WEEKDAY_NAMES, type RedeemRounding } from "../lib/redeemMath";
 
-// 积分规则（LoyaltyConfig，每店一行）。默认值只是占位，正式数字等老板拍板。
+// 积分规则（LoyaltyConfig，每店一行）+ 兑换倍数窗口（RedeemWindow）。默认值 = Appstle 现行规则。
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
-  return { settings: await getLoyaltySettings(session.shop) };
+  const settings = await getLoyaltySettings(session.shop);
+  return { settings, windows: await getRedeemWindows(session.shop, settings) };
 };
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session, sessionToken } = await authenticate.admin(request);
-  const parsed = parseSettingsForm(await request.formData());
-  if (!parsed.ok) return { ok: false as const, errors: parsed.errors };
+  const form = await request.formData();
+  const parsed = parseSettingsForm(form);
+  const windows = parseWindowsJson(String(form.get("windows") ?? "[]"));
+  const errors = [...(parsed.ok ? [] : parsed.errors), ...(windows.ok ? [] : windows.errors)];
+  if (!parsed.ok || !windows.ok) return { ok: false as const, errors };
   await saveLoyaltySettings(session.shop, parsed.value, staffIdentity(session, sessionToken));
+  await saveRedeemWindows(session.shop, windows.value);
   return { ok: true as const };
 };
 
-type Settings = Awaited<ReturnType<typeof loader>>["settings"];
+type LoaderData = Awaited<ReturnType<typeof loader>>;
+type Settings = LoaderData["settings"];
 
 function toForm(s: Settings) {
   return {
@@ -36,20 +51,76 @@ function toForm(s: Settings) {
     pendingDays: String(s.pendingDays),
     expiryMonths: s.expiryMonths === null ? "" : String(s.expiryMonths),
     paidTierMultiplier: String(s.paidTierMultiplier),
+    earnRequiresMember: s.earnRequiresMember,
+    memberTag: s.memberTag,
+    excludeDiscountedItems: s.excludeDiscountedItems,
+    redeemAmountIsTaxInclusive: s.redeemAmountIsTaxInclusive,
+    assumedTaxRate: String(s.assumedTaxRate),
+    redeemRounding: s.redeemRounding as string,
+    redeemRequiresMember: s.redeemRequiresMember,
+    redeemCodePrefix: s.redeemCodePrefix,
+    redeemExpiryHours: String(s.redeemExpiryHours),
   };
 }
 
 type FormState = ReturnType<typeof toForm>;
 type TextKey = { [K in keyof FormState]: FormState[K] extends string ? K : never }[keyof FormState];
+type BoolKey = { [K in keyof FormState]: FormState[K] extends boolean ? K : never }[keyof FormState];
+
+type WindowForm = {
+  label: string;
+  dayOfWeek: string;
+  startHour: string;
+  endHour: string;
+  timezone: string;
+  multiplier: string;
+  pos: boolean;
+  web: boolean;
+  memberOnly: boolean;
+  active: boolean;
+};
+
+const toWindowForm = (w: LoaderData["windows"][number]): WindowForm => ({
+  label: w.label ?? "",
+  dayOfWeek: String(w.dayOfWeek),
+  startHour: w.startHour === null ? "" : String(w.startHour),
+  endHour: w.endHour === null ? "" : String(w.endHour),
+  timezone: w.timezone,
+  multiplier: String(w.multiplier),
+  pos: w.channels.length === 0 || w.channels.includes("pos"),
+  web: w.channels.length === 0 || w.channels.includes("web"),
+  memberOnly: w.memberOnly,
+  active: w.active,
+});
+
+const NEW_WINDOW: WindowForm = {
+  label: "",
+  dayOfWeek: "3",
+  startHour: "",
+  endHour: "",
+  timezone: "America/Toronto",
+  multiplier: "2",
+  pos: true,
+  web: false,
+  memberOnly: true,
+  active: true,
+};
+
+const ROUNDING_LABELS: Record<RedeemRounding, string> = {
+  nearest_cent: "Nearest cent (500 pts → $44.25)",
+  floor_cent: "Round down to the cent ($44.24)",
+  up_10_cents: "Round up to 10 cents ($44.30, matches Appstle)",
+};
 
 const fieldValue = (e: Event) => (e.currentTarget as HTMLInputElement).value;
 const fieldChecked = (e: Event) => (e.currentTarget as HTMLInputElement).checked;
 
 export default function LoyaltySettingsPage() {
-  const { settings } = useLoaderData<typeof loader>();
+  const { settings, windows } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const shopify = useAppBridge();
   const [form, setForm] = useState(() => toForm(settings));
+  const [wins, setWins] = useState<WindowForm[]>(() => windows.map(toWindowForm));
 
   useEffect(() => {
     if (fetcher.data?.ok) shopify.toast.show("Loyalty settings saved");
@@ -58,16 +129,55 @@ export default function LoyaltySettingsPage() {
   const saving = fetcher.state !== "idle";
   const errors = fetcher.data && !fetcher.data.ok ? fetcher.data.errors : [];
   const set = (key: TextKey) => (e: Event) => setForm((f) => ({ ...f, [key]: fieldValue(e) }));
+  const setBool = (key: BoolKey) => (e: Event) => setForm((f) => ({ ...f, [key]: fieldChecked(e) }));
+  const setWin = (i: number, patch: Partial<WindowForm>) =>
+    setWins((ws) => ws.map((w, j) => (j === i ? { ...w, ...patch } : w)));
 
-  const save = () =>
+  const example = (() => {
+    const r = {
+      redeemPointsPerDollar: Number(form.redeemPointsPerDollar) || 0,
+      redeemAmountIsTaxInclusive: form.redeemAmountIsTaxInclusive,
+      assumedTaxRate: Number(form.assumedTaxRate) || 0,
+      redeemRounding: form.redeemRounding as RedeemRounding,
+    };
+    const pts = Number(form.minRedeemPoints) || 500;
+    return `${pts} pts → ${formatCents(redeemAmountCents(pts, 1, r).amountCents)} off before tax; with x2 → ${formatCents(redeemAmountCents(pts, 2, r).amountCents)}`;
+  })();
+
+  const save = () => {
+    const bools = Object.fromEntries(
+      (
+        [
+          "earnOnShipping",
+          "earnOnTax",
+          "earnRequiresMember",
+          "excludeDiscountedItems",
+          "redeemAmountIsTaxInclusive",
+          "redeemRequiresMember",
+        ] as BoolKey[]
+      ).map((k) => [k, form[k] ? "true" : "false"]),
+    );
     fetcher.submit(
       {
         ...form,
-        earnOnShipping: form.earnOnShipping ? "true" : "false",
-        earnOnTax: form.earnOnTax ? "true" : "false",
+        ...bools,
+        windows: JSON.stringify(
+          wins.map((w) => ({
+            label: w.label,
+            dayOfWeek: Number(w.dayOfWeek),
+            startHour: w.startHour,
+            endHour: w.endHour,
+            timezone: w.timezone,
+            multiplier: Number(w.multiplier),
+            channels: w.pos && w.web ? [] : [w.pos ? "pos" : null, w.web ? "web" : null].filter(Boolean),
+            memberOnly: w.memberOnly,
+            active: w.active,
+          })),
+        ),
       },
       { method: "POST" },
     );
+  };
 
   return (
     <s-page heading="Loyalty settings">
@@ -79,10 +189,11 @@ export default function LoyaltySettingsPage() {
       </s-button>
 
       {!settings.persisted && (
-        <s-banner tone="info" heading="Using placeholder defaults">
+        <s-banner tone="info" heading="Showing the current Appstle rules as defaults">
           <s-paragraph>
-            Nothing has been saved for this store yet. The values below are placeholders until the owner confirms the
-            real earn / redeem rules. Changes apply to orders paid after saving; past ledger entries are not recalculated.
+            Nothing has been saved for this store yet. The values below mirror the Appstle Loyalty configuration read on
+            2026-10-28 (members only, 1 pt per $1, 10 pts = $1 tax-inclusive, Wednesday double redeem at POS). Changes apply to
+            orders paid after saving; past ledger entries are not recalculated.
           </s-paragraph>
         </s-banner>
       )}
@@ -100,15 +211,39 @@ export default function LoyaltySettingsPage() {
         </s-banner>
       )}
 
+      <s-section heading="Membership">
+        <s-stack direction="block" gap="base">
+          <s-checkbox
+            label="Only paying members earn points"
+            details="Member = customer tag below, or an active membership subscription (Appstle Memberships)"
+            checked={form.earnRequiresMember}
+            onChange={setBool("earnRequiresMember")}
+          />
+          <s-checkbox
+            label="Only paying members can redeem points"
+            checked={form.redeemRequiresMember}
+            onChange={setBool("redeemRequiresMember")}
+          />
+          <s-text-field label="Member customer tag" name="memberTag" value={form.memberTag} onInput={set("memberTag")} />
+        </s-stack>
+      </s-section>
+
       <s-section heading="Earning">
         <s-stack direction="block" gap="base">
           <s-number-field
             label="Points per $1 spent"
+            details="Line subtotal; tax and shipping only if ticked below"
             name="pointsPerDollar"
             min={0}
             step={0.01}
             value={form.pointsPerDollar}
             onInput={set("pointsPerDollar")}
+          />
+          <s-checkbox
+            label="Discounted items earn no points"
+            details="Any line with a discount allocation (including points codes) is skipped"
+            checked={form.excludeDiscountedItems}
+            onChange={setBool("excludeDiscountedItems")}
           />
           <s-number-field
             label="Paid member multiplier"
@@ -135,18 +270,8 @@ export default function LoyaltySettingsPage() {
             value={form.excludedTags}
             onInput={set("excludedTags")}
           />
-          <s-checkbox
-            label="Earn points on shipping"
-            name="earnOnShipping"
-            checked={form.earnOnShipping}
-            onChange={(e: Event) => setForm((f) => ({ ...f, earnOnShipping: fieldChecked(e) }))}
-          />
-          <s-checkbox
-            label="Earn points on tax"
-            name="earnOnTax"
-            checked={form.earnOnTax}
-            onChange={(e: Event) => setForm((f) => ({ ...f, earnOnTax: fieldChecked(e) }))}
-          />
+          <s-checkbox label="Earn points on shipping" checked={form.earnOnShipping} onChange={setBool("earnOnShipping")} />
+          <s-checkbox label="Earn points on tax" checked={form.earnOnTax} onChange={setBool("earnOnTax")} />
           <s-number-field
             label="Pending days before points become usable"
             details="0 = points are usable immediately; refunds reverse them proportionally either way"
@@ -171,13 +296,37 @@ export default function LoyaltySettingsPage() {
       <s-section heading="Redeeming">
         <s-stack direction="block" gap="base">
           <s-number-field
-            label="Points per $1 of discount"
+            label="Points per $1 of value"
             name="redeemPointsPerDollar"
             min={1}
             step={1}
             value={form.redeemPointsPerDollar}
             onInput={set("redeemPointsPerDollar")}
           />
+          <s-checkbox
+            label="The $ value is tax-inclusive"
+            details="Canada taxes after discounts, so the pre-tax discount = value / (1 + tax rate)"
+            checked={form.redeemAmountIsTaxInclusive}
+            onChange={setBool("redeemAmountIsTaxInclusive")}
+          />
+          <s-number-field
+            label="Assumed tax rate"
+            details="0.13 = Ontario HST"
+            name="assumedTaxRate"
+            min={0}
+            max={0.5}
+            step={0.0001}
+            value={form.assumedTaxRate}
+            onInput={set("assumedTaxRate")}
+          />
+          <s-select label="Rounding" name="redeemRounding" value={form.redeemRounding} onChange={set("redeemRounding")}>
+            {REDEEM_ROUNDINGS.map((r) => (
+              <s-option key={r} value={r}>
+                {ROUNDING_LABELS[r]}
+              </s-option>
+            ))}
+          </s-select>
+          <s-text>Example: {example}</s-text>
           <s-number-field
             label="Minimum points per redemption"
             name="minRedeemPoints"
@@ -194,6 +343,86 @@ export default function LoyaltySettingsPage() {
             value={form.redeemStepPoints}
             onInput={set("redeemStepPoints")}
           />
+          <s-text-field
+            label="Discount code prefix"
+            name="redeemCodePrefix"
+            value={form.redeemCodePrefix}
+            onInput={set("redeemCodePrefix")}
+          />
+          <s-number-field
+            label="Codes expire after (hours)"
+            name="redeemExpiryHours"
+            min={1}
+            step={1}
+            value={form.redeemExpiryHours}
+            onInput={set("redeemExpiryHours")}
+          />
+        </s-stack>
+      </s-section>
+
+      <s-section heading="Redeem windows">
+        <s-stack direction="block" gap="base">
+          <s-paragraph>
+            Multiply the redemption value during these local-time windows (Appstle: Double Redeem Every Wednesday, POS only,
+            members only). Leave both hours empty for the whole day; the end hour is exclusive.
+          </s-paragraph>
+          {wins.length === 0 && <s-paragraph>No windows: every redemption uses x1.</s-paragraph>}
+          {wins.map((w, i) => (
+            <s-box key={i} padding="base" borderWidth="base" borderRadius="base">
+              <s-stack direction="block" gap="small-200">
+                <s-stack direction="inline" gap="base">
+                  <s-text-field label="Label" value={w.label} onInput={(e: Event) => setWin(i, { label: fieldValue(e) })} />
+                  <s-select label="Day" value={w.dayOfWeek} onChange={(e: Event) => setWin(i, { dayOfWeek: fieldValue(e) })}>
+                    {WEEKDAY_NAMES.map((d, n) => (
+                      <s-option key={d} value={String(n)}>
+                        {d}
+                      </s-option>
+                    ))}
+                  </s-select>
+                  <s-number-field
+                    label="Multiplier"
+                    min={0}
+                    step={0.5}
+                    value={w.multiplier}
+                    onInput={(e: Event) => setWin(i, { multiplier: fieldValue(e) })}
+                  />
+                </s-stack>
+                <s-stack direction="inline" gap="base">
+                  <s-number-field
+                    label="Start hour (0-23)"
+                    min={0}
+                    max={23}
+                    step={1}
+                    value={w.startHour}
+                    onInput={(e: Event) => setWin(i, { startHour: fieldValue(e) })}
+                  />
+                  <s-number-field
+                    label="End hour (1-24)"
+                    min={1}
+                    max={24}
+                    step={1}
+                    value={w.endHour}
+                    onInput={(e: Event) => setWin(i, { endHour: fieldValue(e) })}
+                  />
+                  <s-text-field label="Time zone" value={w.timezone} onInput={(e: Event) => setWin(i, { timezone: fieldValue(e) })} />
+                </s-stack>
+                <s-stack direction="inline" gap="base">
+                  <s-checkbox label="POS" checked={w.pos} onChange={(e: Event) => setWin(i, { pos: fieldChecked(e) })} />
+                  <s-checkbox label="Online" checked={w.web} onChange={(e: Event) => setWin(i, { web: fieldChecked(e) })} />
+                  <s-checkbox
+                    label="Members only"
+                    checked={w.memberOnly}
+                    onChange={(e: Event) => setWin(i, { memberOnly: fieldChecked(e) })}
+                  />
+                  <s-checkbox label="Active" checked={w.active} onChange={(e: Event) => setWin(i, { active: fieldChecked(e) })} />
+                  <s-button tone="critical" onClick={() => setWins((ws) => ws.filter((_, j) => j !== i))}>
+                    Remove
+                  </s-button>
+                </s-stack>
+              </s-stack>
+            </s-box>
+          ))}
+          <s-button onClick={() => setWins((ws) => [...ws, { ...NEW_WINDOW }])}>Add window</s-button>
         </s-stack>
       </s-section>
     </s-page>
