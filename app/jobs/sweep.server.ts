@@ -4,11 +4,13 @@
 // 3. 兑换码过期未用 → 停用 Shopify 折扣 + redeem_release 退分；扣了分却没建成码的孤儿 → 退分
 import prisma from "../db.server";
 import { JOB_FOR_TOPIC } from "../models/webhookEvents.server";
-import { getAdminForShop, recomputeCaches, withMemberLock } from "../models/loyalty.server";
+import { getAdminForShop, recomputeCaches, withMemberLock, type AdminGraphql } from "../models/loyalty.server";
 import { sweepRedemptions } from "../models/redemption.server";
 import { enqueue, QUEUES } from "./queue.server";
 
-export async function handleSweep(): Promise<void> {
+export async function handleSweep(
+  deps: { getAdmin: (shop: string) => Promise<AdminGraphql> } = { getAdmin: getAdminForShop },
+): Promise<void> {
   const stale = await prisma.webhookEvent.findMany({
     where: { status: "received", receivedAt: { lt: new Date(Date.now() - 2 * 60 * 1000) } },
     orderBy: { receivedAt: "asc" },
@@ -37,7 +39,7 @@ export async function handleSweep(): Promise<void> {
       matured++;
     }
   }
-  const { released, ...red } = await sweepRedemptions({ getAdmin: getAdminForShop });
+  const { released, ...red } = await sweepRedemptions({ getAdmin: deps.getAdmin });
   for (const r of released) await enqueue(QUEUES.syncBalance, r, {}, 10_000);
 
   if (requeued || matured || red.expired || red.orphans || red.usedLate || red.errors)

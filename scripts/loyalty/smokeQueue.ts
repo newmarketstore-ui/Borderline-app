@@ -1,22 +1,23 @@
-// pg-boss 端到端冒烟：只许连本机库。启动 pg-boss → 落一条假的 orders/paid WebhookEvent → 入队 loyalty.earn →
-// worker（Admin API 用桩）处理 → 断言写出了 earn 流水 → 清理测试数据 → 停 pg-boss。
+// pg-boss 端到端冒烟：只许连本机库（verifyLocal.ts 会起一个一次性库并把 DATABASE_URL 只放进子进程环境）。
 //
-//   DATABASE_URL=postgresql://postgres:postgres@localhost:<port>/loyalty_dev npx tsx scripts/loyalty/smokeQueue.ts
+//   DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:<port>/loyalty_dev npx tsx scripts/loyalty/smokeQueue.ts
 //
-// 走的是「会员身份未知」路径：库里没有这个客户 → earn 任务调（桩）Admin API 拿到 gold-membership 标签 → 建会员 → 记分。
+// 真 pg-boss + 真 Prisma + 真任务代码；只有 Shopify Admin API 换成桩。覆盖：
+//   1. orders/paid 会员（身份未知 → 桩 Admin 拿到 gold-membership）→ earn 120；同一订单重发 → 不重复记
+//   2. orders/paid 非会员 → 不记分、不建 Member
+//   3. orders/paid 非会员买会员商品（标签 Membership）→ 照样记分 + loyalty.sync_membership 延迟 2 分钟入队
+//   4. refunds/create 退一半 → refund_reverse −60；同一退款重发 → 不重复扣
+//   5. 兑换：issueRedemption（桩 Admin 建码）→ Redemption + redeem 流水；表单键重放只发一张；周三 POS 窗口 ×2 + 最低消费 = 折扣额
+//   6. sweep 跑一次 → 过期未用的码停用 + redeem_release 退分；未过期的不动
+//   7. 订单用了兑换码 → Redemption 标 used
+// 输出只有计数 / 积分，没有任何邮箱或凭证。
 import { randomUUID } from "node:crypto";
 
-const url = process.env.DATABASE_URL;
-if (!url)
-  throw new Error(
-    "Set DATABASE_URL explicitly (local database only; .env is production)",
-  );
-const host = new URL(url).hostname;
-if (!["localhost", "127.0.0.1", "::1", "[::1]"].includes(host)) {
-  throw new Error(
-    `Refusing to run the smoke test against ${host}; only a local database is allowed`,
-  );
-}
+import { assertLocalUrl } from "./localDb";
+
+assertLocalUrl(process.env.DATABASE_URL);
+if (process.env.PGBOSS_DATABASE_URL)
+  assertLocalUrl(process.env.PGBOSS_DATABASE_URL);
 // shopify.server 在 import 时初始化，给它占位值（不会真的调 Shopify：Admin API 全部走下面的桩）
 process.env.SHOPIFY_API_KEY ||= "smoke-test-key";
 process.env.SHOPIFY_API_SECRET ||= "smoke-test-secret";
@@ -25,102 +26,184 @@ process.env.SCOPES ||= "read_orders";
 process.env.JOBS_DISABLED = "1";
 
 const SHOP = "smoke-test.myshopify.com";
-const CUSTOMER_GID = `gid://shopify/Customer/9${Date.now()}`;
-const ORDER_ID = Number(`7${Date.now()}`);
+const RUN = Date.now();
+const cust = (n: number) => `gid://shopify/Customer/9${n}${RUN}`;
+const MEMBER_A = cust(1); // 会员（Shopify 上有 gold-membership 标签 + Appstle 合约）
+const NON_MEMBER_B = cust(2);
+const BUYER_C = cust(3); // 正在买会员（标签还没打上）
+const orderNo = (n: number) => Number(`7${n}${RUN}`);
 
-// Admin GraphQL 桩：按操作名回假数据
+// ── Admin GraphQL 桩 ─────────────────────────────────────────────────────────
+const calls = {
+  discountCreate: [] as Array<Record<string, unknown>>,
+  deactivate: [] as string[],
+};
+let discountSeq = 0;
+const PRODUCT_TAGS: Record<string, string[]> = {
+  "gid://shopify/Product/1": [],
+  "gid://shopify/Product/2": ["Service"],
+  "gid://shopify/Product/3": [],
+  "gid://shopify/Product/50": ["Membership"],
+};
 const stubAdmin = {
   graphql: async (
     query: string,
     options?: { variables?: Record<string, unknown> },
   ) => {
+    const v = options?.variables ?? {};
     const body = (data: unknown) =>
       new Response(JSON.stringify({ data }), {
         headers: { "content-type": "application/json" },
       });
     if (query.includes("LoyaltyCustomerMembership")) {
+      const isA = v.id === MEMBER_A;
       return body({
         customer: {
-          id: options?.variables?.id,
+          id: v.id,
           firstName: "Smoke",
           lastName: "Test",
-          tags: ["gold-membership"],
+          tags: isA ? ["gold-membership"] : ["newsletter"],
           defaultEmailAddress: null,
           defaultPhoneNumber: null,
-          appstle: {
-            value: JSON.stringify([
-              {
-                id: 1,
-                sellingPlanNames: ["Annual Membership"],
-                status: "active",
-              },
-            ]),
-            updatedAt: null,
-          },
+          appstle: isA
+            ? {
+                value: JSON.stringify([
+                  {
+                    id: 1,
+                    sellingPlanNames: ["Annual Membership"],
+                    status: "active",
+                  },
+                ]),
+                updatedAt: null,
+              }
+            : null,
         },
       });
     }
     if (query.includes("LoyaltyProductInfo")) {
-      const ids = (options?.variables?.ids as string[]) ?? [];
+      const ids = (v.ids as string[]) ?? [];
       return body({
         nodes: ids.map((id) => ({
           id,
-          productType: "Jacket",
-          tags: id.endsWith("/2") ? ["Service"] : [],
+          productType: "Thing",
+          tags: PRODUCT_TAGS[id] ?? [],
         })),
+      });
+    }
+    if (query.includes("LoyaltyRedeemCodeCreate")) {
+      calls.discountCreate.push(v.input as Record<string, unknown>);
+      return body({
+        discountCodeBasicCreate: {
+          codeDiscountNode: {
+            id: `gid://shopify/DiscountCodeNode/${++discountSeq}${RUN}`,
+          },
+          userErrors: [],
+        },
+      });
+    }
+    if (query.includes("LoyaltyRedeemCodeUsage")) {
+      return body({
+        codeDiscountNode: {
+          id: v.id,
+          codeDiscount: { asyncUsageCount: 0, status: "ACTIVE" },
+        },
+      });
+    }
+    if (query.includes("LoyaltyRedeemCodeDeactivate")) {
+      calls.deactivate.push(String(v.id));
+      return body({
+        discountCodeDeactivate: {
+          codeDiscountNode: { id: v.id },
+          userErrors: [],
+        },
       });
     }
     throw new Error(`smoke stub: unexpected Admin query ${query.slice(0, 80)}`);
   },
 };
 
-const payload = {
-  id: ORDER_ID,
-  admin_graphql_api_id: `gid://shopify/Order/${ORDER_ID}`,
-  name: "#SMOKE1",
-  test: false,
-  taxes_included: false,
-  processed_at: new Date().toISOString(),
-  discount_codes: [],
-  customer: {
-    id: Number(CUSTOMER_GID.split("/").pop()),
-    admin_graphql_api_id: CUSTOMER_GID,
-    first_name: "Smoke",
-  },
-  line_items: [
-    // 计分：$120.50 → 120 分
-    {
-      id: 1,
-      product_id: 1,
-      gift_card: false,
-      quantity: 1,
-      price: "120.50",
-      discount_allocations: [],
-      tax_lines: [{ price: "15.67" }],
-    },
-    // Service 标签 → 不计
-    {
-      id: 2,
-      product_id: 2,
-      gift_card: false,
-      quantity: 1,
-      price: "40.00",
-      discount_allocations: [],
-      tax_lines: [],
-    },
-    // 打折行 → 不计
-    {
-      id: 3,
-      product_id: 3,
-      gift_card: false,
-      quantity: 1,
-      price: "30.00",
-      discount_allocations: [{ amount: "3.00" }],
-      tax_lines: [],
-    },
-  ],
-  shipping_lines: [{ price: "15.00", discount_allocations: [], tax_lines: [] }],
+// ── 假 payload ───────────────────────────────────────────────────────────────
+type Line = {
+  id: number;
+  product_id: number;
+  quantity?: number;
+  price: string;
+  discount?: string;
 };
+function orderPayload(
+  n: number,
+  customerGid: string,
+  lines: Line[],
+  discountCodes: string[] = [],
+) {
+  const id = orderNo(n);
+  return {
+    id,
+    admin_graphql_api_id: `gid://shopify/Order/${id}`,
+    name: `#SMOKE${n}`,
+    test: false,
+    taxes_included: false,
+    processed_at: new Date().toISOString(),
+    discount_codes: discountCodes.map((code) => ({
+      code,
+      amount: "1.00",
+      type: "fixed_amount",
+    })),
+    customer: {
+      id: Number(customerGid.split("/").pop()),
+      admin_graphql_api_id: customerGid,
+      first_name: "Smoke",
+    },
+    line_items: lines.map((l) => ({
+      id: l.id,
+      product_id: l.product_id,
+      gift_card: false,
+      quantity: l.quantity ?? 1,
+      price: l.price,
+      discount_allocations: l.discount ? [{ amount: l.discount }] : [],
+      tax_lines: [],
+    })),
+    shipping_lines: [
+      { price: "15.00", discount_allocations: [], tax_lines: [] },
+    ],
+  };
+}
+
+// 会员订单：2 × $60.25 = $120.50 → 120 分；Service 行、打折行不计；运费不计
+const ORDER_A = orderPayload(1, MEMBER_A, [
+  { id: 1, product_id: 1, quantity: 2, price: "60.25" },
+  { id: 2, product_id: 2, price: "40.00" },
+  { id: 3, product_id: 3, price: "30.00", discount: "3.00" },
+]);
+const ORDER_B = orderPayload(2, NON_MEMBER_B, [
+  { id: 11, product_id: 1, price: "80.00" },
+]);
+const ORDER_C = orderPayload(3, BUYER_C, [
+  { id: 21, product_id: 50, price: "50.00" },
+  { id: 22, product_id: 1, price: "20.00" },
+]);
+const REFUND_ID = Number(`8${RUN}`);
+const REFUND_HALF = {
+  id: REFUND_ID,
+  admin_graphql_api_id: `gid://shopify/Refund/${REFUND_ID}`,
+  order_id: ORDER_A.id,
+  refund_line_items: [{ line_item_id: 1, quantity: 1, subtotal: "60.25" }],
+  order_adjustments: [],
+};
+
+// ── 断言 ─────────────────────────────────────────────────────────────────────
+const failures: string[] = [];
+let passed = 0;
+function check(name: string, ok: boolean, detail: unknown = "") {
+  if (ok) passed++;
+  else
+    failures.push(
+      `${name}${detail === "" ? "" : `: ${JSON.stringify(detail)}`}`,
+    );
+  console.log(
+    `[smoke] ${ok ? "ok  " : "FAIL"} ${name}${!ok && detail !== "" ? ` (${JSON.stringify(detail)})` : ""}`,
+  );
+}
 
 async function main() {
   const { default: prisma } = await import("../../app/db.server");
@@ -128,85 +211,388 @@ async function main() {
     await import("../../app/jobs/queue.server");
   const { processEvent } =
     await import("../../app/models/webhookEvents.server");
-  const { handleEarn } = await import("../../app/jobs/loyaltyEarn.server");
+  const { handleEarn, defaultEarnDeps } =
+    await import("../../app/jobs/loyaltyEarn.server");
+  const { handleRefundReverse } =
+    await import("../../app/jobs/loyaltyRefund.server");
+  const { handleSweep } = await import("../../app/jobs/sweep.server");
+  const { appendLedger } = await import("../../app/models/ledger.server");
+  const { issueRedemption } =
+    await import("../../app/models/redemption.server");
 
   const boss = await getBoss();
-  let failed = false;
-  try {
+  const eventIds: string[] = [];
+  const earnDeps = {
+    ...defaultEarnDeps,
+    getAdmin: async () => stubAdmin,
+    enqueueSyncBalance: async () => null,
+  };
+  const work = (queue: string, handler: Parameters<typeof processEvent>[1]) =>
+    boss.work<{ eventId: string }>(
+      queue,
+      { batchSize: 1, pollingIntervalSeconds: 0.5 },
+      async ([job]) => {
+        await processEvent(job.data.eventId, handler);
+      },
+    );
+
+  async function deliver(
+    topic: string,
+    queue: (typeof QUEUES)[keyof typeof QUEUES],
+    payload: object,
+  ) {
     const event = await prisma.webhookEvent.create({
       data: {
         webhookId: `smoke-${randomUUID()}`,
-        topic: "orders/paid",
+        topic,
         shopDomain: SHOP,
         payload,
         status: "received",
       },
     });
-    await boss.work<{ eventId: string }>(
-      QUEUES.earn,
-      { batchSize: 1, pollingIntervalSeconds: 1 },
-      async ([job]) => {
-        await processEvent(job.data.eventId, (e) =>
-          handleEarn(e, {
-            getAdmin: async () => stubAdmin,
-            enqueueSyncBalance: async () => null,
-            enqueueSyncMembership: async () => null,
-          }),
-        );
-      },
-    );
-    await enqueue(QUEUES.earn, { eventId: event.id });
-
+    eventIds.push(event.id);
+    await enqueue(queue, { eventId: event.id });
     const deadline = Date.now() + 30_000;
-    let status = "received";
     while (Date.now() < deadline) {
       const row = await prisma.webhookEvent.findUniqueOrThrow({
         where: { id: event.id },
       });
-      status = row.status;
-      if (status === "done" || status === "failed") {
-        if (row.error) console.log(`[smoke] event note: ${row.error}`);
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 500));
+      if (row.status === "done" || row.status === "failed") return row;
+      await new Promise((r) => setTimeout(r, 250));
     }
-    const ledger = await prisma.pointsLedger.findUnique({
+    return prisma.webhookEvent.findUniqueOrThrow({ where: { id: event.id } });
+  }
+  const member = (gid: string) =>
+    prisma.member.findUnique({
+      where: { shopifyCustomerId: gid },
+      include: { memberships: true },
+    });
+  const ledgerOf = (memberId: string, type: string) =>
+    prisma.pointsLedger.findMany({ where: { memberId, type } });
+
+  try {
+    await work(QUEUES.earn, (e) => handleEarn(e, earnDeps));
+    await work(QUEUES.refundReverse, handleRefundReverse);
+
+    // 1. 会员订单
+    const evA = await deliver("orders/paid", QUEUES.earn, ORDER_A);
+    const earnA = await prisma.pointsLedger.findUnique({
       where: {
         type_referenceId: {
           type: "earn",
-          referenceId: payload.admin_graphql_api_id,
+          referenceId: ORDER_A.admin_graphql_api_id,
         },
       },
     });
-    const member = await prisma.member.findUnique({
-      where: { shopifyCustomerId: CUSTOMER_GID },
-      include: { memberships: true },
+    let a = await member(MEMBER_A);
+    check("member order: event done", evA.status === "done", {
+      status: evA.status,
+      note: evA.error,
     });
-    console.log(
-      `[smoke] event status=${status}; earn delta=${ledger?.delta ?? "none"}; member tier=${member?.tier}; memberships=${member?.memberships.length}`,
+    check("member order: earn 120", earnA?.delta === 120, earnA?.delta);
+    check(
+      "member order: balance 120, tier paid, 1 membership",
+      a?.balanceCached === 120 &&
+        a.tier === "paid" &&
+        a.memberships.length === 1,
+      {
+        balance: a?.balanceCached,
+        tier: a?.tier,
+        memberships: a?.memberships.length,
+      },
     );
-    if (
-      status !== "done" ||
-      ledger?.delta !== 120 ||
-      member?.balanceCached !== 120 ||
-      member.memberships.length !== 1
-    ) {
-      failed = true;
-      console.error(
-        "[smoke] FAILED: expected done / earn 120 / balance 120 / 1 membership",
-      );
-    } else console.log("[smoke] OK");
 
-    // 清理（会员级联删流水 / 合约）
-    await prisma.member.deleteMany({
-      where: { shopifyCustomerId: CUSTOMER_GID },
+    // 1b. 同一订单重发（新的 webhookId）
+    const evA2 = await deliver("orders/paid", QUEUES.earn, ORDER_A);
+    a = await member(MEMBER_A);
+    const earnRowsA = a ? (await ledgerOf(a.id, "earn")).length : -1;
+    check(
+      "member order redelivered: idempotent",
+      evA2.status === "done" && earnRowsA === 1 && a?.balanceCached === 120,
+      {
+        note: evA2.error,
+        earnRowsA,
+      },
+    );
+
+    // 2. 非会员订单
+    const evB = await deliver("orders/paid", QUEUES.earn, ORDER_B);
+    const earnB = await prisma.pointsLedger.count({
+      where: { type: "earn", referenceId: ORDER_B.admin_graphql_api_id },
     });
-    await prisma.webhookEvent.delete({ where: { id: event.id } });
+    check(
+      "non-member order: done, no earn, no Member row",
+      evB.status === "done" && earnB === 0 && !(await member(NON_MEMBER_B)),
+      {
+        note: evB.error,
+        earnB,
+      },
+    );
+
+    // 3. 非会员买会员商品
+    const before = Date.now();
+    const evC = await deliver("orders/paid", QUEUES.earn, ORDER_C);
+    const c = await member(BUYER_C);
+    const earnC = await prisma.pointsLedger.findUnique({
+      where: {
+        type_referenceId: {
+          type: "earn",
+          referenceId: ORDER_C.admin_graphql_api_id,
+        },
+      },
+    });
+    check(
+      "membership purchase: earn 70 as member",
+      evC.status === "done" && earnC?.delta === 70 && c?.balanceCached === 70,
+      {
+        note: evC.error,
+        delta: earnC?.delta,
+      },
+    );
+    const syncJobs = await prisma.$queryRawUnsafe<
+      Array<{ data: { customerGid?: string }; start_after: Date }>
+    >(
+      `SELECT data, start_after FROM pgboss.job WHERE name = $1`,
+      QUEUES.syncMembership,
+    );
+    const syncC = syncJobs.filter((j) => j.data?.customerGid === BUYER_C);
+    const delayS = syncC.length
+      ? (new Date(syncC[0].start_after).getTime() - before) / 1000
+      : null;
+    check(
+      "membership purchase: sync_membership queued ~120 s later",
+      syncC.length === 1 && delayS !== null && delayS >= 100 && delayS <= 150,
+      {
+        jobs: syncC.length,
+        delayS,
+      },
+    );
+
+    // 4. 退一半
+    const evR = await deliver(
+      "refunds/create",
+      QUEUES.refundReverse,
+      REFUND_HALF,
+    );
+    a = await member(MEMBER_A);
+    const rev = a ? await ledgerOf(a.id, "refund_reverse") : [];
+    check(
+      "refund half: refund_reverse -60, balance 60",
+      evR.status === "done" &&
+        rev.length === 1 &&
+        rev[0].delta === -60 &&
+        a?.balanceCached === 60,
+      {
+        note: evR.error,
+        deltas: rev.map((r) => r.delta),
+        balance: a?.balanceCached,
+      },
+    );
+    const evR2 = await deliver(
+      "refunds/create",
+      QUEUES.refundReverse,
+      REFUND_HALF,
+    );
+    const rev2 = a ? await ledgerOf(a.id, "refund_reverse") : [];
+    check(
+      "refund redelivered: idempotent",
+      evR2.status === "done" && rev2.length === 1,
+      { note: evR2.error, rows: rev2.length },
+    );
+
+    // 5. 兑换
+    if (!a) throw new Error("member A missing");
+    await appendLedger({
+      memberId: a.id,
+      delta: 1000,
+      type: "adjust",
+      referenceType: "staff_adjust",
+      referenceId: `staff_adjust:smoke-${RUN}`,
+      note: "smoke top-up",
+      createdBy: "smoke",
+    });
+    const key1 = randomUUID();
+    const r1 = await issueRedemption(
+      {
+        memberId: a.id,
+        points: 500,
+        channel: "web",
+        issuedBy: "smoke",
+        idempotencyKey: key1,
+      },
+      { getAdmin: async () => stubAdmin },
+    );
+    a = await member(MEMBER_A);
+    const redeemRows = await ledgerOf(a!.id, "redeem");
+    check(
+      "redemption (web): issued with discount id, $44.25",
+      r1.ok &&
+        r1.redemption.status === "issued" &&
+        Boolean(r1.redemption.discountCodeId) &&
+        r1.redemption.amountCents === 4425,
+      r1.ok ? { amount: r1.redemption.amountCents } : r1.error,
+    );
+    check(
+      "redemption (web): redeem ledger -500 ref redemption:<id>, balance 560",
+      r1.ok &&
+        redeemRows.length === 1 &&
+        redeemRows[0].delta === -500 &&
+        redeemRows[0].referenceId === `redemption:${r1.redemption.id}` &&
+        a?.balanceCached === 560,
+      { rows: redeemRows.length, balance: a?.balanceCached },
+    );
+    check(
+      "redemption (web): no minimum requirement",
+      calls.discountCreate.length === 1 &&
+        !("minimumRequirement" in calls.discountCreate[0]),
+    );
+    const r1b = await issueRedemption(
+      {
+        memberId: a!.id,
+        points: 500,
+        channel: "web",
+        issuedBy: "smoke",
+        idempotencyKey: key1,
+      },
+      { getAdmin: async () => stubAdmin },
+    );
+    check(
+      "redemption replay (same form key): same code, nothing new",
+      r1b.ok &&
+        !r1b.applied &&
+        r1.ok &&
+        r1b.redemption.id === r1.redemption.id &&
+        (await ledgerOf(a!.id, "redeem")).length === 1 &&
+        calls.discountCreate.length === 1,
+    );
+
+    // 周三 POS（多伦多 2026-10-21 中午）：×2 → $88.50，最低订单 = $88.50；24 小时有效 → 现在已过期
+    const r2 = await issueRedemption(
+      {
+        memberId: a!.id,
+        points: 500,
+        channel: "pos",
+        issuedBy: "smoke",
+        idempotencyKey: randomUUID(),
+        at: new Date("2026-10-21T16:00:00Z"),
+      },
+      { getAdmin: async () => stubAdmin },
+    );
+    const input2 = calls.discountCreate[1] as {
+      minimumRequirement?: unknown;
+      customerGets?: { value?: { discountAmount?: { amount?: string } } };
+    };
+    check(
+      "redemption (Wednesday POS): x2 = $88.50, min subtotal $88.50",
+      r2.ok &&
+        r2.redemption.amountCents === 8850 &&
+        JSON.stringify(input2?.minimumRequirement) ===
+          JSON.stringify({
+            subtotal: { greaterThanOrEqualToSubtotal: "88.50" },
+          }) &&
+        input2?.customerGets?.value?.discountAmount?.amount === "88.50",
+      {
+        amount: r2.ok ? r2.redemption.amountCents : r2.error,
+        min: input2?.minimumRequirement,
+      },
+    );
+    a = await member(MEMBER_A);
+    check(
+      "redemption (Wednesday POS): balance 60",
+      a?.balanceCached === 60,
+      a?.balanceCached,
+    );
+
+    // 6. sweep
+    await handleSweep({ getAdmin: async () => stubAdmin });
+    const r2row = r2.ok
+      ? await prisma.redemption.findUnique({ where: { id: r2.redemption.id } })
+      : null;
+    const r1row = r1.ok
+      ? await prisma.redemption.findUnique({ where: { id: r1.redemption.id } })
+      : null;
+    const releases = await ledgerOf(a!.id, "redeem_release");
+    a = await member(MEMBER_A);
+    check(
+      "sweep: expired redemption -> expired + deactivated",
+      r2row?.status === "expired" &&
+        calls.deactivate.length === 1 &&
+        calls.deactivate[0] === r2row?.discountCodeId,
+      {
+        status: r2row?.status,
+        deactivated: calls.deactivate.length,
+      },
+    );
+    check(
+      "sweep: redeem_release +500 for it, balance 560",
+      releases.length === 1 &&
+        releases[0].delta === 500 &&
+        releases[0].referenceId === `redemption:${r2row?.id}` &&
+        a?.balanceCached === 560,
+      { releases: releases.map((r) => r.delta), balance: a?.balanceCached },
+    );
+    check(
+      "sweep: unexpired redemption untouched",
+      r1row?.status === "issued",
+      r1row?.status,
+    );
+
+    // 7. 订单用了 r1 的码 → used（这一行有折扣分摊 → 不计分）
+    const code1 = r1.ok ? r1.redemption.discountCode! : "";
+    const evU = await deliver(
+      "orders/paid",
+      QUEUES.earn,
+      orderPayload(
+        4,
+        MEMBER_A,
+        [{ id: 31, product_id: 1, price: "60.00", discount: "44.25" }],
+        [code1],
+      ),
+    );
+    const r1used = r1.ok
+      ? await prisma.redemption.findUnique({ where: { id: r1.redemption.id } })
+      : null;
+    check(
+      "order with the code: redemption marked used",
+      evU.status === "done" &&
+        r1used?.status === "used" &&
+        r1used.orderId === `gid://shopify/Order/${orderNo(4)}`,
+      {
+        note: evU.error,
+        status: r1used?.status,
+      },
+    );
+
+    const totals = {
+      members: await prisma.member.count({ where: { shopDomain: SHOP } }),
+      ledgerRows: await prisma.pointsLedger.count({
+        where: { member: { shopDomain: SHOP } },
+      }),
+      redemptions: await prisma.redemption.count({
+        where: { member: { shopDomain: SHOP } },
+      }),
+      webhookEvents: eventIds.length,
+    };
+    console.log(`[smoke] totals ${JSON.stringify(totals)}`);
   } finally {
+    // 清理（会员级联删流水 / 合约 / 兑换）
+    await prisma.member
+      .deleteMany({
+        where: { shopifyCustomerId: { in: [MEMBER_A, NON_MEMBER_B, BUYER_C] } },
+      })
+      .catch(() => undefined);
+    await prisma.webhookEvent
+      .deleteMany({ where: { id: { in: eventIds } } })
+      .catch(() => undefined);
     await boss.stop({ graceful: false, wait: true });
     await prisma.$disconnect();
   }
-  if (failed) process.exit(1);
+  console.log(`[smoke] ${passed} checks passed, ${failures.length} failed`);
+  if (failures.length) {
+    for (const f of failures) console.error(`[smoke] FAILED: ${f}`);
+    process.exit(1);
+  }
+  console.log("[smoke] OK");
 }
 
 main().catch((e: unknown) => {
