@@ -92,7 +92,7 @@ Staff UI: /app/loyalty, /app/loyalty/:memberId (memberships, issue redemption, a
 
 - Pure functions (unit-tested): `app/lib/loyaltyMath.ts` (earn, refund reversal), `app/lib/redeemMath.ts` (redemption quote, windows, rounding), `app/lib/membership.ts` (member check, Appstle metafield parsing, earn gate), `app/lib/appstleImport.ts` (importer mapping), `app/lib/shopifyPayload.ts` (webhook / GraphQL normalisation). Amounts are integer cents in CAD; points are floored; decimals use BigInt fixed-point.
 - Services: `app/models/ledger.server.ts` (append-only ledger, member row lock, caches; Prisma only), `loyalty.server.ts` (settings, windows, Admin client), `membership.server.ts`, `redemption.server.ts`.
-- Jobs and webhooks use the shop's offline session (`getAdminForShop` → `unauthenticated.admin`). Staff pages use online tokens (`useOnlineTokens: true`) so `Adjust points` / `Issue redemption` / settings record the staff email; Shopify writes from those pages (discount codes, membership refresh) still go through the offline token, so they do not depend on the staff member's admin permissions.
+- Every Shopify call uses the shop's offline session (`app/models/shopAdmin.server.ts`: `getOfflineAdmin` / `getAdminForShop` → `sessionStorage.findSessionsByShop` + `unauthenticated.admin`), in jobs, webhooks and staff pages alike. Staff pages use online tokens (`useOnlineTokens: true`) only to identify the staff member, so `Adjust points` / `Issue redemption` / settings record the staff email; location lists (home, daily entry), the daily store report, discount codes, membership refresh and the balance metafield do not depend on the staff member's admin permissions.
 - `JOBS_DISABLED=1` stops this process from running workers (it can still enqueue). `PGBOSS_POOL_MAX` (default 3), `PGBOSS_SSL=require` and `PGBOSS_DATABASE_URL` are optional overrides.
 
 **Rules (defaults = Appstle configuration read 2026-10-28; all editable in settings)**
@@ -109,9 +109,9 @@ Staff UI: /app/loyalty, /app/loyalty/:memberId (memberships, issue redemption, a
 | `minRedeemPoints` / `redeemStepPoints` | 500 / 100 | Allowed amounts: 500, 600, 700 … up to the balance. |
 | `redeemRequiresMember` | on | Appstle's reward rules were restricted to `gold-membership`. |
 | `redeemCodePrefix` / `redeemExpiryHours` | `POINTS` / 24 | Code format and lifetime. |
-| Redeem windows (`RedeemWindow`) | Wednesday, America/Toronto, x2, POS only, members only | "Double Redeem Every Wednesday". Day 0 = Sunday; optional start / end hour (end exclusive); the biggest matching multiplier wins. Shown as the default until the settings page is saved once. |
+| Redeem windows (`RedeemWindow`) | Wednesday, America/Toronto, x2, POS only, members only, minimum order = discount | "Double Redeem Every Wednesday". Day 0 = Sunday; optional start / end hour (end exclusive); the biggest matching multiplier wins. `minSpendEqualsDiscount` (column default off, on in the built-in Wednesday default, as Appstle's Wednesday rules require): the code gets `minimumRequirement.subtotal` = the discount amount, which POS enforces too. Shown as the default until the settings page is saved once. |
 
-**Memberships.** Today the source of truth is Appstle Memberships: the `gold-membership` tag plus the customer metafield `appstle_membership.subscriptions` (contract id, selling plan 8600813823, plan name, status, start / next billing). `loyalty.sync_membership` reads both via Admin GraphQL and upserts `Membership` on `(source, externalId)`; Appstle contracts that disappear from the metafield are marked `expired`. The earn job syncs on the spot when it meets a customer whose membership was never synced; customers/update queues a sync for existing members and for customers that just got the tag. Members get `tier = paid` and `paidUntil` = latest renewal date. The paid product is "Store Membership" ($50, tag `Membership`); a future `shopify_order` membership source can attach to the same table.
+**Memberships.** Today the source of truth is Appstle Memberships: the `gold-membership` tag plus the customer metafield `appstle_membership.subscriptions` (contract id, selling plan 8600813823, plan name, status, start / next billing). `loyalty.sync_membership` reads both via Admin GraphQL and upserts `Membership` on `(source, externalId)`; Appstle contracts that disappear from the metafield are marked `expired`. The earn job syncs on the spot when it meets a customer whose membership was never synced; customers/update queues a sync for existing members and for customers that just got the tag. Membership purchase race: orders/paid can arrive before Appstle tags the buyer, so when the gate says "not a member" but the order contains a product tagged `Membership`, that order earns as a member (ledger `meta.membershipPurchase = true`) and `loyalty.sync_membership` is queued with a 120-second delay. Members get `tier = paid` and `paidUntil` = latest renewal date. The paid product is "Store Membership" ($50, tag `Membership`); a future `shopify_order` membership source can attach to the same table.
 
 **Redemption flow**
 
@@ -159,24 +159,20 @@ npm run build
 
 **Local database verification** (never against `DATABASE_URL` in `.env`: that is production)
 
+No Docker needed: the dev dependency `embedded-postgres` ships PostgreSQL 17 binaries in `node_modules`.
+
 ```shell
-docker run -d --name loyalty-pg -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=loyalty_dev -p 55432:5432 postgres:16
-export DATABASE_URL=postgresql://postgres:postgres@localhost:55432/loyalty_dev
-npx prisma migrate deploy                                   # applies every migration in prisma/migrations
-npx tsx scripts/loyalty/importAppstle.ts --rows … --members …                       # dry run
-npx tsx scripts/loyalty/importAppstle.ts --rows … --members … --apply --only <id> \
-  --shop smoke-test.myshopify.com --confirm-db localhost:55432/loyalty_dev
-npx tsx scripts/loyalty/smokeQueue.ts    # boots pg-boss, fake orders/paid with stubbed Admin API, asserts a 120-point earn row
-docker rm -f loyalty-pg
+npx tsx scripts/loyalty/verifyLocal.ts      # whole check, about 1 minute; --export-dir <dir> to pick an export (default: newest)
+npx tsx scripts/loyalty/localDb.ts          # just a throwaway server; prints DATABASE_URL, Ctrl+C stops and deletes it
 ```
 
-`smokeQueue.ts` refuses to run unless the database host is localhost.
+`verifyLocal.ts` starts a server on a free port under `.local-pg/` (gitignored) and passes its URL only to child processes (`DATABASE_URL` and `PGBOSS_DATABASE_URL`), then: `prisma migrate deploy` from empty + `prisma migrate diff --exit-code` against `schema.prisma`; importer dry-run, `--apply --only <one gold-membership customer>`, `--apply` for all rows, and a second `--apply` that must leave the counts unchanged (expected counts come from the same pure planner); `smokeQueue.ts` (real pg-boss + Prisma + job code, stubbed Admin API: member / non-member / membership-purchase earn, redelivery, half refund, redemption issue + replay + Wednesday x2 with minimum subtotal, sweep expiry release, mark used). It stops the server and deletes the data at the end; it prints counts only. `smokeQueue.ts` and `localDb.ts` refuse any non-local database host.
 
 **Applying the migrations in production**
 
-Migrations are plain SQL under `prisma/migrations/`. `npm run setup` (`prisma generate && prisma migrate deploy`) runs on container start (`docker-start`) and applies pending migrations: `20261028120000_loyalty_foundation` (new tables) and `20261028180000_loyalty_membership_redemption` (new columns with defaults, `Membership`, `RedeemWindow`; two column defaults on `LoyaltyConfig` change for rows created later). pg-boss creates its own `pgboss` schema on first start. Never run `prisma migrate dev` / `db push` against `DATABASE_URL`: it is the production database.
+Migrations are plain SQL under `prisma/migrations/`. `npm run setup` (`prisma generate && prisma migrate deploy`) runs on container start (`docker-start`) and applies pending migrations: `20261028120000_loyalty_foundation` (new tables), `20261028180000_loyalty_membership_redemption` (new columns with defaults, `Membership`, `RedeemWindow`; two column defaults on `LoyaltyConfig` change for rows created later) and `20261028200000_redeem_window_min_spend` (one boolean column with a default). pg-boss creates its own `pgboss` schema on first start. Never run `prisma migrate dev` / `db push` against `DATABASE_URL`: it is the production database.
 
-**Before go-live**: run `shopify app deploy` so the scopes (`read_customers, write_customers, write_discounts, write_orders`) and webhook subscriptions take effect, then have the merchant re-authorise; set the host's `SCOPES` env var to the same list; request protected customer data access (name, email, phone) in the Partner Dashboard, otherwise Shopify rejects the orders/* and customers/* subscriptions; keep one machine always on (no suspend) so workers and the 10-minute sweep keep running. With online tokens every staff member opens the app once to get their own token; pages that read locations (home, daily entry) now run with that staff member's permissions.
+**Before go-live**: run `shopify app deploy` so the scopes (`read_customers, write_customers, write_discounts, write_orders`) and webhook subscriptions take effect, then have the merchant re-authorise; set the host's `SCOPES` env var to the same list; request protected customer data access (name, email, phone) in the Partner Dashboard, otherwise Shopify rejects the orders/* and customers/* subscriptions; keep one machine always on (no suspend) so workers and the 10-minute sweep keep running. With online tokens every staff member opens the app once to get their own token (used for identity only; Shopify reads and writes stay on the offline token).
 
 ## Shopify Dev MCP
 
