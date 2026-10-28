@@ -1,6 +1,7 @@
 // Shopify webhook（REST 形状）/ Admin GraphQL 订单 → 积分计算输入。纯函数，无 I/O。
 // 金额一律取 shop_money（店铺币种 CAD），不用 presentment（顾客看到的币种）。
 import { moneyToCents, type EarnLine, type EarnOrderInput, type RefundLineInput } from "./loyaltyMath";
+import { parseTagList } from "./membership";
 
 type Money = string | number | null | undefined;
 type RestMoneySet = { shop_money?: { amount?: Money } | null } | null | undefined;
@@ -25,6 +26,7 @@ export type OrderCustomer = {
   phone: string | null;
   firstName: string | null;
   lastName: string | null;
+  tags: string[] | null; // null = payload 没带标签（不要拿它覆盖库里的快照）
 };
 
 export type NormalizedOrder = {
@@ -33,6 +35,8 @@ export type NormalizedOrder = {
   test: boolean;
   processedAt: string | null;
   customer: OrderCustomer | null;
+  // 订单上出现过的折扣码：discount_codes[].code ∪ discount_applications[].code ∪ discount_applications[].title。
+  // POS 上店员手输的码有时只出现在 discount_applications（title = 码），所以一起收；核销时只认我们发过的码。
   discountCodes: string[];
   earn: EarnOrderInput;
 };
@@ -45,7 +49,18 @@ export function customerFromRest(c: Json | null | undefined, fallbackEmail?: unk
     phone: str(c.phone),
     firstName: str(c.first_name),
     lastName: str(c.last_name),
+    tags: c.tags === undefined || c.tags === null ? null : parseTagList(c.tags),
   };
+}
+
+const uniq = (list: Array<string | null>) => Array.from(new Set(list.filter((x): x is string => Boolean(x))));
+
+/** REST 订单的 discount_codes + discount_applications → 去重后的码 / 标题。 */
+export function orderDiscountCodesRest(p: Json): string[] {
+  return uniq([
+    ...arr(p.discount_codes).map((d) => str(d.code)),
+    ...arr(p.discount_applications).flatMap((a) => [str(a.code), str(a.title)]),
+  ]);
 }
 
 /** orders/paid · orders/create webhook。没有 line_items 数组时返回 null（调用方改走 Admin API）。 */
@@ -69,7 +84,7 @@ export function normalizeOrderWebhook(p: Json): NormalizedOrder | null {
     test: Boolean(p.test),
     processedAt: str(p.processed_at) ?? str(p.created_at),
     customer: customerFromRest(p.customer, p.email ?? p.contact_email),
-    discountCodes: arr(p.discount_codes).map((d) => String(d.code ?? "")).filter(Boolean),
+    discountCodes: orderDiscountCodesRest(p),
     earn: {
       lines,
       shippingCents: ship.reduce((s, l) => s + restCents(l.price_set, l.price), 0),
@@ -113,9 +128,13 @@ export function normalizeOrderGraphql(o: Json): NormalizedOrder {
           phone: str(c.defaultPhoneNumber?.phoneNumber),
           firstName: str(c.firstName),
           lastName: str(c.lastName),
+          tags: Array.isArray(c.tags) ? parseTagList(c.tags) : null,
         }
       : null,
-    discountCodes: arr(o.discountCodes).map(String),
+    discountCodes: uniq([
+      ...arr(o.discountCodes).map(str),
+      ...arr(o.discountApplications?.nodes).flatMap((a) => [str(a.code), str(a.title)]),
+    ]),
     earn: {
       lines,
       shippingCents: ship.reduce((s, l) => s + gqlCents(l.originalPriceSet), 0),

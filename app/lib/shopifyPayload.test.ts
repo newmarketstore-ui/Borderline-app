@@ -38,6 +38,21 @@ const orderPaid = {
 };
 
 describe("normalizeOrderWebhook", () => {
+  it("collects POS codes from discount_applications and customer tags", () => {
+    const n = normalizeOrderWebhook({
+      ...orderPaid,
+      discount_codes: [],
+      discount_applications: [
+        { type: "manual", title: "POINTS-500-K3D9QX-7FQ2", value: "44.25" },
+        { type: "discount_code", code: "points-1000-k3d9qx-aaaa" },
+        { type: "automatic", title: "Set deal 15%" },
+      ],
+      customer: { ...orderPaid.customer, tags: "Gold, gold-membership" },
+    })!;
+    expect(n.discountCodes).toEqual(["POINTS-500-K3D9QX-7FQ2", "points-1000-k3d9qx-aaaa", "Set deal 15%"]);
+    expect(n.customer?.tags).toEqual(["Gold", "gold-membership"]);
+  });
+
   it("maps REST line items, shipping, customer and codes", () => {
     const n = normalizeOrderWebhook(orderPaid)!;
     expect(n.orderGid).toBe("gid://shopify/Order/5550001");
@@ -47,6 +62,7 @@ describe("normalizeOrderWebhook", () => {
       phone: null,
       firstName: "Ada",
       lastName: "L",
+      tags: null,
     });
     expect(n.discountCodes).toEqual(["BL-PTS-ABC"]);
     expect(n.earn.lines[0]).toMatchObject({

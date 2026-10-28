@@ -1,9 +1,11 @@
 // loyalty.sweep（每 10 分钟）：补漏。
 // 1. 落了库但没入队成功的事件（status = received 超过 2 分钟）→ 重新入队
 // 2. 待确认积分到期（pendingCached > 0）→ 重算缓存 + 同步 metafield
+// 3. 兑换码过期未用 → 停用 Shopify 折扣 + redeem_release 退分；扣了分却没建成码的孤儿 → 退分
 import prisma from "../db.server";
 import { JOB_FOR_TOPIC } from "../models/webhookEvents.server";
-import { recomputeCaches, withMemberLock } from "../models/loyalty.server";
+import { getAdminForShop, recomputeCaches, withMemberLock } from "../models/loyalty.server";
+import { sweepRedemptions } from "../models/redemption.server";
 import { enqueue, QUEUES } from "./queue.server";
 
 export async function handleSweep(): Promise<void> {
@@ -35,5 +37,11 @@ export async function handleSweep(): Promise<void> {
       matured++;
     }
   }
-  if (requeued || matured) console.log(`[loyalty.sweep] requeued ${requeued} events, ${matured} members had points mature`);
+  const { released, ...red } = await sweepRedemptions({ getAdmin: getAdminForShop });
+  for (const r of released) await enqueue(QUEUES.syncBalance, r, {}, 10_000);
+
+  if (requeued || matured || red.expired || red.orphans || red.usedLate || red.errors)
+    console.log(
+      `[loyalty.sweep] requeued ${requeued} events, ${matured} members had points mature, redemptions: ${JSON.stringify(red)}`,
+    );
 }

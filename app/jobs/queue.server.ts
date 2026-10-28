@@ -8,6 +8,7 @@ export const QUEUES = {
   refundReverse: "loyalty.refund_reverse",
   syncCustomer: "loyalty.sync_customer",
   syncBalance: "loyalty.sync_balance",
+  syncMembership: "loyalty.sync_membership",
   gdpr: "gdpr.process",
   sweep: "loyalty.sweep",
 } as const;
@@ -17,6 +18,7 @@ export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
 // webhook 事件类任务只带 WebhookEvent.id，payload 从库里读
 export type EventJobData = { eventId: string };
 export type SyncBalanceJobData = { shop: string; memberId: string };
+export type SyncMembershipJobData = { shop: string; customerGid: string };
 
 declare global {
   // eslint-disable-next-line no-var
@@ -85,7 +87,7 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
 /** 发任务。webhook 路由里用：有超时，保证 Shopify 5 秒内拿到 200。 */
 export async function enqueue(
   name: QueueName,
-  data: EventJobData | SyncBalanceJobData | Record<string, never>,
+  data: EventJobData | SyncBalanceJobData | SyncMembershipJobData | Record<string, never>,
   options: PgBoss.SendOptions = {},
   timeoutMs = 3000,
 ): Promise<string | null> {

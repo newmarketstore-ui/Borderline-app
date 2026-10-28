@@ -1,8 +1,11 @@
-// loyalty.earn：orders/paid → 按规则算分 → 写 earn 流水（幂等键 = 订单 GID）→ 排队同步 metafield。
+// loyalty.earn：orders/paid → 核销积分码 → 会员门槛 → 按规则算分 → 写 earn 流水（幂等键 = 订单 GID）→ 排队同步 metafield。
 // 优先用 webhook payload 算；payload 缺订单行时才调 Admin API 拉订单。
+// 会员门槛（LoyaltyConfig.earnRequiresMember，默认开）：只有付费会员赚分。
+//   会员身份未知（没有 Member 行或从没同步过）→ 当场用 Admin API 拉标签 + appstle_membership.subscriptions 再判断。
 import type { WebhookEvent } from "@prisma/client";
 
 import { computeEarnPoints } from "../lib/loyaltyMath";
+import { earnGate } from "../lib/membership";
 import { normalizeOrderGraphql, normalizeOrderWebhook, type NormalizedOrder } from "../lib/shopifyPayload";
 import {
   appendLedger,
@@ -10,24 +13,35 @@ import {
   getAdminForShop,
   getLoyaltySettings,
   gql,
-  markRedemptionsUsed,
   ORDER_FOR_EARN_QUERY,
   tierMultiplier,
   upsertMemberFromCustomer,
   type AdminGraphql,
 } from "../models/loyalty.server";
+import { getMemberForGate, syncMembershipForCustomer, type MemberWithMemberships } from "../models/membership.server";
+import { markRedemptionUsed } from "../models/redemption.server";
 import { enqueue, QUEUES } from "./queue.server";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export async function handleEarn(event: WebhookEvent): Promise<string | void> {
+export type EarnDeps = {
+  getAdmin: (shop: string) => Promise<AdminGraphql>;
+  enqueueSyncBalance: (shop: string, memberId: string) => Promise<unknown>;
+};
+
+const defaultDeps: EarnDeps = {
+  getAdmin: getAdminForShop,
+  enqueueSyncBalance: (shop, memberId) => enqueue(QUEUES.syncBalance, { shop, memberId }, {}, 10_000),
+};
+
+export async function handleEarn(event: WebhookEvent, deps: EarnDeps = defaultDeps): Promise<string | void> {
   const shop = event.shopDomain;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 外部 JSON
   const payload = event.payload as Record<string, any>;
   const settings = await getLoyaltySettings(shop);
 
   let admin: AdminGraphql | null = null;
-  const getAdmin = async () => (admin ??= await getAdminForShop(shop));
+  const getAdmin = async () => (admin ??= await deps.getAdmin(shop));
 
   let order: NormalizedOrder | null = normalizeOrderWebhook(payload);
   if (!order) {
@@ -40,10 +54,30 @@ export async function handleEarn(event: WebhookEvent): Promise<string | void> {
   }
 
   if (order.test) return "skipped: test order";
-  if (!order.customer) return "skipped: no customer on order";
 
-  // 订单用了积分兑换码 → 核销
-  await markRedemptionsUsed(order.discountCodes, order.orderGid);
+  // 订单用了积分兑换码 → 核销（不管顾客是不是会员、这单赚不赚分）
+  const usage = await markRedemptionUsed(order);
+  const usedNote = usage.used ? `; ${usage.used} redemption(s) marked used` : "";
+
+  if (!order.customer) return `skipped: no customer on order${usedNote}`;
+  const orderDate = order.processedAt ? new Date(order.processedAt) : new Date();
+
+  // 会员门槛
+  let gateMember: MemberWithMemberships | null = await getMemberForGate(order.customer.gid);
+  if (settings.earnRequiresMember) {
+    if (!gateMember || !gateMember.membershipSyncedAt) {
+      gateMember = await syncMembershipForCustomer(shop, await getAdmin(), order.customer.gid, {
+        memberTag: settings.memberTag,
+        createIfMember: true,
+        source: "order",
+      });
+    } else if (order.customer.tags) {
+      // payload 里的标签是下单时的最新值，先用它判断（customers/update 也会再同步）
+      gateMember = { ...gateMember, tags: order.customer.tags };
+    }
+    const gate = earnGate(settings, gateMember, orderDate);
+    if (!gate.eligible) return `skipped: not a paying member (${gate.reason})${usedNote}`;
+  }
 
   // 有排除规则时才去补商品类型 / 标签
   const needsProductInfo =
@@ -52,7 +86,6 @@ export async function handleEarn(event: WebhookEvent): Promise<string | void> {
   const lines = needsProductInfo ? await enrichLinesWithProductInfo(await getAdmin(), order.earn.lines) : order.earn.lines;
 
   const member = await upsertMemberFromCustomer(shop, order.customer, "order");
-  const orderDate = order.processedAt ? new Date(order.processedAt) : new Date();
   const multiplier = tierMultiplier(member, settings, orderDate);
 
   const result = computeEarnPoints(
@@ -64,9 +97,10 @@ export async function handleEarn(event: WebhookEvent): Promise<string | void> {
       earnOnShipping: settings.earnOnShipping,
       earnOnTax: settings.earnOnTax,
       tierMultiplier: multiplier,
+      excludeDiscountedItems: settings.excludeDiscountedItems,
     },
   );
-  if (result.points <= 0) return `skipped: 0 points (eligible ${result.eligibleCents} cents)`;
+  if (result.points <= 0) return `skipped: 0 points (eligible ${result.eligibleCents} cents)${usedNote}`;
 
   const { applied, member: updated } = await appendLedger({
     memberId: member.id,
@@ -92,11 +126,14 @@ export async function handleEarn(event: WebhookEvent): Promise<string | void> {
         earnOnTax: settings.earnOnTax,
         excludedProductTypes: settings.excludedProductTypes,
         excludedTags: settings.excludedTags,
+        excludeDiscountedItems: settings.excludeDiscountedItems,
+        earnRequiresMember: settings.earnRequiresMember,
+        memberTag: settings.memberTag,
       },
     },
   });
 
   // metafield 同步单独排队（有自己的重试），不让它拖垮记账
-  await enqueue(QUEUES.syncBalance, { shop, memberId: updated.id }, {}, 10_000);
-  return applied ? undefined : "already applied (idempotent)";
+  await deps.enqueueSyncBalance(shop, updated.id);
+  return applied ? (usedNote ? usedNote.slice(2) : undefined) : `already applied (idempotent)${usedNote}`;
 }

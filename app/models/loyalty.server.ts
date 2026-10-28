@@ -1,11 +1,18 @@
 // 会员积分服务层：会员 upsert、只追加流水、余额缓存、客户 metafield 镜像、规则读写、员工调分。
 // 计分公式在 app/lib/loyaltyMath.ts（纯函数）；这里只管 I/O。
-import { Prisma, type Member, type PointsLedger } from "@prisma/client";
+import { Prisma, type Member } from "@prisma/client";
 
 import prisma from "../db.server";
 import { sessionStorage, unauthenticated } from "../shopify.server";
 import type { EarnLine } from "../lib/loyaltyMath";
 import type { OrderCustomer } from "../lib/shopifyPayload";
+import {
+  REDEEM_CHANNELS,
+  REDEEM_ROUNDINGS,
+  type RedeemRounding,
+  type RedeemWindowRule,
+} from "../lib/redeemMath";
+import { appendLedger } from "./ledger.server";
 
 // ── 规则 ────────────────────────────────────────────────────────────────────
 
@@ -21,28 +28,51 @@ export type LoyaltySettings = {
   pendingDays: number;
   expiryMonths: number | null;
   paidTierMultiplier: number;
+  earnRequiresMember: boolean;
+  memberTag: string;
+  excludeDiscountedItems: boolean;
+  redeemAmountIsTaxInclusive: boolean;
+  assumedTaxRate: number;
+  redeemRounding: RedeemRounding;
+  redeemRequiresMember: boolean;
+  redeemCodePrefix: string;
+  redeemExpiryHours: number;
   updatedBy: string | null;
   updatedAt: string | null;
   persisted: boolean; // false = 库里还没有这一行，用的是下面的默认值
 };
 
-// 默认值只是占位，正式规则等老板拍板（方案 §2.5）后在设置页改
+// 默认值 = Appstle 现行规则（reports/积分迁移_Appstle导出_2026-10-28.md §七，2026-10-28 读取）：
+// 只限 gold-membership 会员赚分；每 $1 小计 1 分，不含税 / 运费；打折行、Gift Card / Service 标签商品不给分；向下取整；
+// 兑换 10 分 = $1（含税价值，税前折扣 = 分 / 10 / 1.13）；最低 500、步长 100。
 export const DEFAULT_SETTINGS: LoyaltySettings = {
   pointsPerDollar: 1,
-  redeemPointsPerDollar: 100,
+  redeemPointsPerDollar: 10,
   minRedeemPoints: 500,
   redeemStepPoints: 100,
   excludedProductTypes: [],
-  excludedTags: [],
+  excludedTags: ["Gift Card", "Service"],
   earnOnShipping: false,
   earnOnTax: false,
   pendingDays: 0,
   expiryMonths: null,
   paidTierMultiplier: 1,
+  earnRequiresMember: true,
+  memberTag: "gold-membership",
+  excludeDiscountedItems: true,
+  redeemAmountIsTaxInclusive: true,
+  assumedTaxRate: 0.13,
+  redeemRounding: "nearest_cent",
+  redeemRequiresMember: true,
+  redeemCodePrefix: "POINTS",
+  redeemExpiryHours: 24,
   updatedBy: null,
   updatedAt: null,
   persisted: false,
 };
+
+const asRounding = (v: string): RedeemRounding =>
+  (REDEEM_ROUNDINGS as string[]).includes(v) ? (v as RedeemRounding) : "nearest_cent";
 
 export async function getLoyaltySettings(shop: string): Promise<LoyaltySettings> {
   const row = await prisma.loyaltyConfig.findUnique({ where: { shopDomain: shop } });
@@ -59,6 +89,15 @@ export async function getLoyaltySettings(shop: string): Promise<LoyaltySettings>
     pendingDays: row.pendingDays,
     expiryMonths: row.expiryMonths,
     paidTierMultiplier: Number(row.paidTierMultiplier.toString()),
+    earnRequiresMember: row.earnRequiresMember,
+    memberTag: row.memberTag,
+    excludeDiscountedItems: row.excludeDiscountedItems,
+    redeemAmountIsTaxInclusive: row.redeemAmountIsTaxInclusive,
+    assumedTaxRate: Number(row.assumedTaxRate.toString()),
+    redeemRounding: asRounding(row.redeemRounding),
+    redeemRequiresMember: row.redeemRequiresMember,
+    redeemCodePrefix: row.redeemCodePrefix,
+    redeemExpiryHours: row.redeemExpiryHours,
     updatedBy: row.updatedBy,
     updatedAt: row.updatedAt.toISOString(),
     persisted: true,
@@ -69,6 +108,8 @@ export type SettingsInput = Omit<LoyaltySettings, "updatedBy" | "updatedAt" | "p
 
 const splitList = (v: string) =>
   Array.from(new Set(v.split(/[,\n]/).map((s) => s.trim()).filter(Boolean)));
+
+const truthy = (v: FormDataEntryValue | null) => v === "on" || v === "true";
 
 /** 表单字段 → 校验后的规则。返回错误列表（英文，给店员看）。 */
 export function parseSettingsForm(form: FormData): { ok: true; value: SettingsInput } | { ok: false; errors: string[] } {
@@ -83,6 +124,12 @@ export function parseSettingsForm(form: FormData): { ok: true; value: SettingsIn
     return n;
   };
   const expiryRaw = String(form.get("expiryMonths") ?? "").trim();
+  const memberTag = String(form.get("memberTag") ?? "").trim();
+  if (!memberTag) errors.push("memberTag is required");
+  const prefix = String(form.get("redeemCodePrefix") ?? "").trim().toUpperCase();
+  if (!/^[A-Z0-9]{2,12}$/.test(prefix)) errors.push("redeemCodePrefix must be 2-12 letters or digits");
+  const rounding = String(form.get("redeemRounding") ?? "");
+  if (!(REDEEM_ROUNDINGS as string[]).includes(rounding)) errors.push(`redeemRounding must be one of ${REDEEM_ROUNDINGS.join(", ")}`);
   const value: SettingsInput = {
     pointsPerDollar: num("pointsPerDollar", { min: 0, max: 100 }),
     redeemPointsPerDollar: num("redeemPointsPerDollar", { min: 1, max: 100000, integer: true }),
@@ -90,11 +137,20 @@ export function parseSettingsForm(form: FormData): { ok: true; value: SettingsIn
     redeemStepPoints: num("redeemStepPoints", { min: 1, max: 1000000, integer: true }),
     excludedProductTypes: splitList(String(form.get("excludedProductTypes") ?? "")),
     excludedTags: splitList(String(form.get("excludedTags") ?? "")),
-    earnOnShipping: form.get("earnOnShipping") === "on" || form.get("earnOnShipping") === "true",
-    earnOnTax: form.get("earnOnTax") === "on" || form.get("earnOnTax") === "true",
+    earnOnShipping: truthy(form.get("earnOnShipping")),
+    earnOnTax: truthy(form.get("earnOnTax")),
     pendingDays: num("pendingDays", { min: 0, max: 365, integer: true }),
     expiryMonths: expiryRaw === "" ? null : num("expiryMonths", { min: 1, max: 120, integer: true }),
     paidTierMultiplier: num("paidTierMultiplier", { min: 0, max: 10 }),
+    earnRequiresMember: truthy(form.get("earnRequiresMember")),
+    memberTag,
+    excludeDiscountedItems: truthy(form.get("excludeDiscountedItems")),
+    redeemAmountIsTaxInclusive: truthy(form.get("redeemAmountIsTaxInclusive")),
+    assumedTaxRate: num("assumedTaxRate", { min: 0, max: 0.5 }),
+    redeemRounding: asRounding(rounding),
+    redeemRequiresMember: truthy(form.get("redeemRequiresMember")),
+    redeemCodePrefix: prefix,
+    redeemExpiryHours: num("redeemExpiryHours", { min: 1, max: 24 * 90, integer: true }),
   };
   return errors.length ? { ok: false, errors } : { ok: true, value };
 }
@@ -104,6 +160,7 @@ export async function saveLoyaltySettings(shop: string, value: SettingsInput, up
     ...value,
     pointsPerDollar: new Prisma.Decimal(value.pointsPerDollar),
     paidTierMultiplier: new Prisma.Decimal(value.paidTierMultiplier),
+    assumedTaxRate: new Prisma.Decimal(value.assumedTaxRate),
     updatedBy,
   };
   await prisma.loyaltyConfig.upsert({
@@ -117,6 +174,123 @@ export function tierMultiplier(member: Pick<Member, "tier" | "paidUntil">, setti
   if (member.tier !== "paid") return 1;
   if (member.paidUntil && member.paidUntil < at) return 1;
   return settings.paidTierMultiplier;
+}
+
+// ── 兑换倍数窗口 ─────────────────────────────────────────────────────────────
+
+// 没保存过规则的店先用 Appstle 的「Double Redeem Every Wednesday」：周三（多伦多）×2，只限 POS、只限会员
+export const DEFAULT_REDEEM_WINDOWS: RedeemWindowRule[] = [
+  {
+    id: "default-wednesday",
+    label: "Double Redeem Every Wednesday",
+    dayOfWeek: 3,
+    startHour: null,
+    endHour: null,
+    timezone: "America/Toronto",
+    multiplier: 2,
+    channels: ["pos"],
+    memberOnly: true,
+    active: true,
+  },
+];
+
+export async function getRedeemWindows(shop: string, settings?: Pick<LoyaltySettings, "persisted">) {
+  const rows = await prisma.redeemWindow.findMany({ where: { shopDomain: shop }, orderBy: { createdAt: "asc" } });
+  const persisted = settings?.persisted ?? (await prisma.loyaltyConfig.count({ where: { shopDomain: shop } })) > 0;
+  if (!rows.length && !persisted) return DEFAULT_REDEEM_WINDOWS.map((w) => ({ ...w }));
+  return rows.map(
+    (r): RedeemWindowRule => ({
+      id: r.id,
+      label: r.label,
+      dayOfWeek: r.dayOfWeek,
+      startHour: r.startHour,
+      endHour: r.endHour,
+      timezone: r.timezone,
+      multiplier: Number(r.multiplier.toString()),
+      channels: r.channels,
+      memberOnly: r.memberOnly,
+      active: r.active,
+    }),
+  );
+}
+
+const isValidTimeZone = (tz: string) => {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: tz });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** 设置页窗口编辑器提交的 JSON → 校验后的窗口列表。 */
+export function parseWindowsJson(raw: string): { ok: true; value: RedeemWindowRule[] } | { ok: false; errors: string[] } {
+  let list: unknown;
+  try {
+    list = JSON.parse(raw || "[]");
+  } catch {
+    return { ok: false, errors: ["Redeem windows: invalid data, reload the page"] };
+  }
+  if (!Array.isArray(list) || list.length > 20) return { ok: false, errors: ["Redeem windows: at most 20 windows"] };
+  const errors: string[] = [];
+  const hour = (v: unknown, label: string, i: number) => {
+    if (v === null || v === undefined || v === "") return null;
+    const n = Number(v);
+    if (!Number.isInteger(n) || n < 0 || n > 24) {
+      errors.push(`Window ${i + 1}: ${label} must be a whole hour 0-24`);
+      return null;
+    }
+    return n;
+  };
+  const value = list.map((w: Record<string, unknown>, i): RedeemWindowRule => {
+    const dayOfWeek = Number(w.dayOfWeek);
+    if (!Number.isInteger(dayOfWeek) || dayOfWeek < 0 || dayOfWeek > 6) errors.push(`Window ${i + 1}: pick a day`);
+    const multiplier = Number(w.multiplier);
+    if (!Number.isFinite(multiplier) || multiplier <= 0 || multiplier > 10)
+      errors.push(`Window ${i + 1}: multiplier must be between 0 and 10`);
+    const startHour = hour(w.startHour, "start hour", i);
+    const endHour = hour(w.endHour, "end hour", i);
+    if (startHour !== null && endHour !== null && endHour <= startHour)
+      errors.push(`Window ${i + 1}: end hour must be after start hour`);
+    const timezone = String(w.timezone || "America/Toronto");
+    if (!isValidTimeZone(timezone)) errors.push(`Window ${i + 1}: unknown time zone`);
+    const channels = Array.isArray(w.channels)
+      ? Array.from(new Set(w.channels.map(String).filter((c) => (REDEEM_CHANNELS as string[]).includes(c))))
+      : [];
+    return {
+      label: String(w.label ?? "").trim().slice(0, 100) || null,
+      dayOfWeek,
+      startHour,
+      endHour,
+      timezone,
+      multiplier,
+      channels,
+      memberOnly: Boolean(w.memberOnly),
+      active: w.active === undefined ? true : Boolean(w.active),
+    };
+  });
+  return errors.length ? { ok: false, errors } : { ok: true, value };
+}
+
+/** 整体替换该店的窗口（店员一次保存整张表）。 */
+export async function saveRedeemWindows(shop: string, windows: RedeemWindowRule[]) {
+  await prisma.$transaction([
+    prisma.redeemWindow.deleteMany({ where: { shopDomain: shop } }),
+    prisma.redeemWindow.createMany({
+      data: windows.map((w) => ({
+        shopDomain: shop,
+        label: w.label ?? null,
+        dayOfWeek: w.dayOfWeek,
+        startHour: w.startHour,
+        endHour: w.endHour,
+        timezone: w.timezone,
+        multiplier: new Prisma.Decimal(w.multiplier),
+        channels: w.channels,
+        memberOnly: w.memberOnly,
+        active: w.active,
+      })),
+    }),
+  ]);
 }
 
 // ── Admin API（任务里用离线 session）──────────────────────────────────────────
@@ -153,8 +327,15 @@ export const ORDER_FOR_EARN_QUERY = `#graphql
       processedAt
       taxesIncluded
       discountCodes
+      discountApplications(first: 20) {
+        nodes {
+          ... on DiscountCodeApplication { code }
+          ... on ManualDiscountApplication { title }
+        }
+      }
       customer {
         id
+        tags
         firstName
         lastName
         defaultEmailAddress { emailAddress }
@@ -231,13 +412,14 @@ export async function syncBalanceMetafield(admin: AdminGraphql, memberId: string
 
 // ── 会员 ────────────────────────────────────────────────────────────────────
 
-/** 按 Customer GID upsert；不拿空值覆盖已有资料。 */
+/** 按 Customer GID upsert；不拿空值覆盖已有资料。payload 带了标签（c.tags 非 null）就同步标签快照。 */
 export async function upsertMemberFromCustomer(shop: string, c: OrderCustomer, source: string): Promise<Member> {
-  const present = Object.fromEntries(
+  const present: Record<string, string | string[] | null> = Object.fromEntries(
     Object.entries({ email: c.email, phone: c.phone, firstName: c.firstName, lastName: c.lastName }).filter(
       ([, v]) => v !== null && v !== undefined && v !== "",
     ),
   );
+  if (c.tags) present.tags = c.tags;
   return prisma.member.upsert({
     where: { shopifyCustomerId: c.gid },
     create: { shopifyCustomerId: c.gid, shopDomain: shop, source, ...present },
@@ -245,104 +427,16 @@ export async function upsertMemberFromCustomer(shop: string, c: OrderCustomer, s
   });
 }
 
-// ── 流水（只追加）+ 余额缓存 ─────────────────────────────────────────────────
-
-type Tx = Prisma.TransactionClient;
-
-export type LedgerEntryInput = {
-  memberId: string;
-  delta: number;
-  type: "earn" | "redeem" | "redeem_release" | "refund_reverse" | "adjust" | "expire" | "migrate";
-  referenceType?: string | null;
-  referenceId?: string | null;
-  orderId?: string | null;
-  orderName?: string | null;
-  note?: string | null;
-  meta?: Prisma.InputJsonValue;
-  availableAt?: Date;
-  createdBy: string;
-};
-
-/** 同一会员的记账串行化：事务里先 SELECT … FOR UPDATE 锁住会员行。 */
-export async function withMemberLock<T>(memberId: string, fn: (tx: Tx) => Promise<T>): Promise<T> {
-  return prisma.$transaction(async (tx) => {
-    await tx.$queryRaw`SELECT "id" FROM "Member" WHERE "id" = ${memberId} FOR UPDATE`;
-    return fn(tx);
-  });
-}
-
-export async function recomputeCaches(tx: Tx, memberId: string): Promise<Member> {
-  const now = new Date();
-  const available = await tx.pointsLedger.aggregate({
-    where: { memberId, availableAt: { lte: now } },
-    _sum: { delta: true },
-  });
-  const pending = await tx.pointsLedger.aggregate({
-    where: { memberId, availableAt: { gt: now } },
-    _sum: { delta: true },
-  });
-  return tx.member.update({
-    where: { id: memberId },
-    data: { balanceCached: available._sum.delta ?? 0, pendingCached: pending._sum.delta ?? 0 },
-  });
-}
-
-/** 在已加锁的事务里写一条流水。幂等：(type, referenceId) 已存在就不写，返回 applied=false。 */
-export async function insertLedger(
-  tx: Tx,
-  entry: LedgerEntryInput,
-): Promise<{ applied: boolean; row: PointsLedger | null; member: Member }> {
-  if (entry.referenceId) {
-    const existing = await tx.pointsLedger.findUnique({
-      where: { type_referenceId: { type: entry.type, referenceId: entry.referenceId } },
-    });
-    if (existing) {
-      return { applied: false, row: existing, member: await tx.member.findUniqueOrThrow({ where: { id: entry.memberId } }) };
-    }
-  }
-  const row = await tx.pointsLedger.create({
-    data: {
-      memberId: entry.memberId,
-      delta: entry.delta || 0, // 避免 -0
-      type: entry.type,
-      referenceType: entry.referenceType ?? null,
-      referenceId: entry.referenceId ?? null,
-      orderId: entry.orderId ?? null,
-      orderName: entry.orderName ?? null,
-      note: entry.note ?? null,
-      meta: entry.meta,
-      availableAt: entry.availableAt ?? new Date(),
-      createdBy: entry.createdBy,
-    },
-  });
-  const member = await recomputeCaches(tx, entry.memberId);
-  return { applied: true, row, member };
-}
-
-export const isUniqueViolation = (e: unknown) =>
-  e instanceof Prisma.PrismaClientKnownRequestError && e.code === "P2002";
-
-/** 加锁 + 写一条流水 + 重算缓存。并发下撞唯一约束也当作「已经写过」。 */
-export async function appendLedger(entry: LedgerEntryInput) {
-  try {
-    return await withMemberLock(entry.memberId, (tx) => insertLedger(tx, entry));
-  } catch (e) {
-    if (isUniqueViolation(e)) {
-      return { applied: false, row: null, member: await prisma.member.findUniqueOrThrow({ where: { id: entry.memberId } }) };
-    }
-    throw e;
-  }
-}
-
-/** 订单用了我们发的积分码 → 核销置 used（第一版兑分还没上线，先把挂钩留好）。 */
-export async function markRedemptionsUsed(codes: string[], orderGid: string) {
-  if (!codes.length) return 0;
-  const res = await prisma.redemption.updateMany({
-    where: { status: "issued", discountCode: { in: codes, mode: "insensitive" } },
-    data: { status: "used", orderId: orderGid },
-  });
-  return res.count;
-}
+// ── 流水（只追加）+ 余额缓存：实现在 ./ledger.server.ts ─────────────────────────
+export {
+  appendLedger,
+  insertLedger,
+  isUniqueViolation,
+  recomputeCaches,
+  withMemberLock,
+  type LedgerEntryInput,
+  type Tx,
+} from "./ledger.server";
 
 // ── 店员界面 ────────────────────────────────────────────────────────────────
 
@@ -366,7 +460,11 @@ export async function searchMembers(shop: string, q: string, take = 50) {
 export async function getMemberWithLedger(shop: string, memberId: string, take = 200) {
   return prisma.member.findFirst({
     where: { id: memberId, shopDomain: shop },
-    include: { ledger: { orderBy: { createdAt: "desc" }, take } },
+    include: {
+      ledger: { orderBy: { createdAt: "desc" }, take },
+      memberships: { orderBy: { createdAt: "desc" } },
+      redemptions: { orderBy: { createdAt: "desc" }, take: 20 },
+    },
   });
 }
 
@@ -389,7 +487,7 @@ export async function adjustPoints(params: {
   });
 }
 
-/** 记账用的员工标识：在线 session 有邮箱就用邮箱；本应用默认离线 token，没有邮箱时用 Shopify 用户 ID。 */
+/** 记账用的员工标识：在线 session（useOnlineTokens）带员工邮箱；万一拿不到才退回 Shopify 用户 ID。 */
 export function staffIdentity(
   session: { onlineAccessInfo?: { associated_user?: { email?: string } } },
   sessionToken?: { sub?: string } | null,
