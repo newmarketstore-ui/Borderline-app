@@ -3,7 +3,6 @@
 import { Prisma, type Member } from "@prisma/client";
 
 import prisma from "../db.server";
-import { sessionStorage, unauthenticated } from "../shopify.server";
 import type { EarnLine } from "../lib/loyaltyMath";
 import type { OrderCustomer } from "../lib/shopifyPayload";
 import {
@@ -13,6 +12,7 @@ import {
   type RedeemWindowRule,
 } from "../lib/redeemMath";
 import { appendLedger } from "./ledger.server";
+import type { AdminGraphql } from "./shopAdmin.server";
 
 // ── 规则 ────────────────────────────────────────────────────────────────────
 
@@ -293,22 +293,9 @@ export async function saveRedeemWindows(shop: string, windows: RedeemWindowRule[
   ]);
 }
 
-// ── Admin API（任务里用离线 session）──────────────────────────────────────────
+// ── Admin API（任务里用离线 session；实现在 ./shopAdmin.server.ts）──────────────────
 
-export type AdminGraphql = {
-  graphql: (query: string, options?: { variables?: Record<string, unknown> }) => Promise<Response>;
-};
-
-/** 任务里拿 Admin 客户端：先确认有离线 session，再交给库（会自动刷新过期的离线 token）。 */
-export async function getAdminForShop(shop: string): Promise<AdminGraphql> {
-  const sessions = await sessionStorage.findSessionsByShop(shop);
-  if (!sessions.some((s) => !s.isOnline)) {
-    throw new Error(`No offline session stored for ${shop}; open the app once in Shopify admin`);
-  }
-  const { admin } = await unauthenticated.admin(shop);
-  return admin as unknown as AdminGraphql;
-}
-
+export { getAdminForShop, getOfflineAdmin, type AdminGraphql } from "./shopAdmin.server";
 export async function gql<T>(admin: AdminGraphql, query: string, variables?: Record<string, unknown>): Promise<T> {
   const resp = await admin.graphql(query, variables ? { variables } : undefined);
   const json = (await resp.json()) as { data?: T; errors?: unknown };

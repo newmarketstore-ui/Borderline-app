@@ -5,11 +5,14 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import { authenticate } from "../shopify.server";
 import { torontoToday, torontoYesterday } from "../lib/dates";
 import { listManualMetrics } from "../models/manualMetrics.server";
+import { getOfflineAdmin } from "../models/shopAdmin.server";
 
 type LocationOption = { id: string; name: string };
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { admin, session } = await authenticate.admin(request);
+  // 在线 session 只用来认人 / 认店；读门店用店铺离线 token，不受当前员工后台权限影响
+  const { session } = await authenticate.admin(request);
+  const { admin } = await getOfflineAdmin(session.shop);
 
   const locResp = await admin.graphql(
     `#graphql

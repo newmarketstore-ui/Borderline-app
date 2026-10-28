@@ -9,6 +9,7 @@ import { CHANNELS, TRAFFIC_FACTORS } from "../lib/channels";
 import { torontoToday, torontoYesterday, isValidDate } from "../lib/dates";
 import { getManualMetric, upsertManualMetric } from "../models/manualMetrics.server";
 import { buildAndSendLocationStoreReport } from "../models/dailyStoreReport.server";
+import { getOfflineAdmin } from "../models/shopAdmin.server";
 import type { ManualMetricInput } from "../lib/metricValidation";
 
 type LocationOption = { id: string; name: string };
@@ -19,7 +20,9 @@ const choiceValues = (e: Event) =>
   (e.currentTarget as unknown as { values: string[] }).values;
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { admin, session } = await authenticate.admin(request);
+  // 在线 session 只用来认人 / 认店；读门店用店铺离线 token，不受当前员工后台权限影响
+  const { session } = await authenticate.admin(request);
+  const { admin } = await getOfflineAdmin(session.shop);
 
   const url = new URL(request.url);
   const businessDate = isValidDate(url.searchParams.get("date"))
@@ -70,12 +73,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     | { status: "error"; error: string };
 
   try {
-    if (!session.accessToken) {
-      report = { status: "error", error: "当前 Shopify session 没有 accessToken，无法拉订单生成报告。" };
+    // 拉订单生成报告用店铺离线 token（不是当前员工的在线 token）
+    const offline = (await getOfflineAdmin(session.shop)).session;
+    if (!offline.accessToken) {
+      report = { status: "error", error: "店铺离线 session 没有 accessToken，无法拉订单生成报告。" };
     } else {
       const reportResult = await buildAndSendLocationStoreReport({
         shopDomain: session.shop,
-        accessToken: session.accessToken,
+        accessToken: offline.accessToken,
         businessDate: input.businessDate,
         locationId: input.locationId,
         locationName: input.locationName,

@@ -13,7 +13,6 @@ import {
   getRedeemWindows,
   staffIdentity,
   syncBalanceMetafield,
-  type AdminGraphql,
 } from "../models/loyalty.server";
 import { syncMembershipForCustomer } from "../models/membership.server";
 import { issueRedemption } from "../models/redemption.server";
@@ -115,7 +114,7 @@ const torontoTime = (d: Date) =>
   d.toLocaleString("en-CA", { timeZone: "America/Toronto", dateStyle: "short", timeStyle: "short" });
 
 export const action = async ({ request, params }: ActionFunctionArgs): Promise<ActionResult> => {
-  const { admin, session, sessionToken } = await authenticate.admin(request);
+  const { session, sessionToken } = await authenticate.admin(request);
   const member = await getMemberWithLedger(session.shop, String(params.memberId), 0);
   if (!member) return { intent: "unknown", ok: false, errors: ["Member not found"] };
   const form = await request.formData();
@@ -176,10 +175,10 @@ export const action = async ({ request, params }: ActionFunctionArgs): Promise<A
     idempotencyKey: key,
   });
 
-  // 当场用这次请求的 Admin 客户端同步 metafield；失败就交给队列重试
+  // 当场用店铺离线客户端同步 metafield（不用员工在线 token）；失败就交给队列重试
   let metafield: "synced" | "queued" = "synced";
   try {
-    await syncBalanceMetafield(admin as unknown as AdminGraphql, member.id);
+    await syncBalanceMetafield(await getAdminForShop(session.shop), member.id);
   } catch (e) {
     console.error("[loyalty] metafield sync after adjust failed, queued:", (e as Error).message);
     metafield = "queued";
