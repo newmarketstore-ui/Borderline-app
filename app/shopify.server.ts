@@ -16,6 +16,9 @@ const shopify = shopifyApp({
   authPathPrefix: "/auth",
   sessionStorage: new PrismaSessionStorage(prisma),
   distribution: AppDistribution.AppStore,
+  // 店员页面用在线 token（session 带员工邮箱，调分 / 兑换记到具体员工）。
+  // 库在 token exchange 时照样先存离线 token；webhook / pg-boss 任务一律走离线 session（getAdminForShop / unauthenticated.admin）。
+  useOnlineTokens: true,
   future: {
     expiringOfflineAccessTokens: true,
   },
