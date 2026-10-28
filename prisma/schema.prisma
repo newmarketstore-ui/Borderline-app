@@ -89,3 +89,130 @@ model ManualDailyMetricAudit {
   @@index([metricId])
   @@index([createdAt])
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 会员积分（Loyalty）底座 —— 设计见 reports/BorderlineAI应用_会员_打蜡服务_AI客服_架构方案_2026-10-27.md §2 / §7
+// 原则：PointsLedger 只追加不改不删；余额 = ledger 求和，Member 上的 *Cached 只是缓存。
+// 类型字段（type / status / channel …）用 String 存，取值写在注释里，方便以后加值不用迁移 enum。
+// ─────────────────────────────────────────────────────────────────────────────
+
+// 会员：主键语义 = Shopify Customer GID；邮箱 / 手机只做辅助匹配。
+model Member {
+  id                String    @id @default(cuid())
+  shopifyCustomerId String    @unique // gid://shopify/Customer/123
+  shopDomain        String
+  email             String?
+  phone             String?
+  firstName         String?
+  lastName          String?
+  tier              String    @default("standard") // standard | paid
+  paidUntil         DateTime?
+  balanceCached     Int       @default(0) // 可用积分 = sum(delta) where availableAt <= now
+  pendingCached     Int       @default(0) // 待确认积分 = sum(delta) where availableAt > now
+  source            String // order | appstle_migrated | staff | customer_update
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  ledger      PointsLedger[]
+  redemptions Redemption[]
+
+  @@index([shopDomain, email])
+  @@index([shopDomain, phone])
+  @@index([shopDomain, lastName, firstName])
+}
+
+// 积分流水：只追加。幂等键 = (type, referenceId)。
+// Postgres 唯一约束里 NULL 互不相等，所以 referenceId 为空的行（理论上只有极少数手工行）不受约束；
+// 需要幂等的行（earn / refund_reverse / redeem / migrate / staff adjust）一律带 referenceId。
+model PointsLedger {
+  id            String   @id @default(cuid())
+  memberId      String
+  delta         Int // +赚 / −扣，可让余额变负（退款扣回）
+  type          String // earn | redeem | redeem_release | refund_reverse | adjust | expire | migrate
+  referenceType String? // order | refund | redemption | staff_adjust | appstle_snapshot
+  referenceId   String? // 订单 GID / 退款 GID / 核销 ID / 表单幂等键
+  orderId       String? // 关联订单 GID（earn / refund_reverse / redeem 用，方便按单汇总扣回）
+  orderName     String? // #22274
+  note          String?
+  meta          Json? // 计算明细（可计分金额、逐行拆分、当时的规则快照），退款按比例扣回要用
+  availableAt   DateTime @default(now()) // > now 视为待确认（pendingDays > 0 时）
+  createdBy     String // system | 员工邮箱
+  createdAt     DateTime @default(now())
+
+  member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@unique([type, referenceId])
+  @@index([memberId, createdAt])
+  @@index([orderId])
+}
+
+// 兑分：积分换一次性折扣（线上专属码 / POS 自定义折扣）。
+model Redemption {
+  id             String    @id @default(cuid())
+  memberId       String
+  points         Int
+  amountCents    Int
+  currency       String    @default("CAD")
+  discountCodeId String? // gid://shopify/DiscountCodeNode/…
+  discountCode   String?
+  orderId        String?
+  status         String    @default("issued") // issued | used | cancelled | expired
+  channel        String // web | pos
+  issuedBy       String // system | 员工邮箱
+  expiresAt      DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@index([memberId, createdAt])
+  @@index([discountCode])
+  @@index([status, expiresAt])
+}
+
+// 积分规则：每个店一行（老板拍板后在 /app/loyalty/settings 改）。
+model LoyaltyConfig {
+  id                    String   @id @default(cuid())
+  shopDomain            String   @unique
+  pointsPerDollar       Decimal  @default(1) @db.Decimal(10, 4)
+  redeemPointsPerDollar Int      @default(100)
+  minRedeemPoints       Int      @default(500)
+  redeemStepPoints      Int      @default(100)
+  excludedProductTypes  String[] @default([])
+  excludedTags          String[] @default([])
+  earnOnShipping        Boolean  @default(false)
+  earnOnTax             Boolean  @default(false)
+  pendingDays           Int      @default(0)
+  expiryMonths          Int?
+  paidTierMultiplier    Decimal  @default(1) @db.Decimal(6, 3)
+  updatedBy             String?
+  updatedAt             DateTime @updatedAt
+}
+
+// 迁移当天每个客户 Appstle 原始 JSON 原样留底（只读）。
+model MigrationSnapshot {
+  id                String   @id @default(cuid())
+  shopifyCustomerId String
+  source            String   @default("appstle_loyalty")
+  raw               Json
+  importedAt        DateTime @default(now())
+  ledgerId          String? // 对应写入的 migrate 流水
+
+  @@unique([source, shopifyCustomerId])
+}
+
+// Webhook 原始落库：webhookId = X-Shopify-Webhook-Id，重发时唯一约束挡住重复。
+model WebhookEvent {
+  id          String    @id @default(cuid())
+  webhookId   String    @unique
+  topic       String
+  shopDomain  String
+  payload     Json
+  receivedAt  DateTime  @default(now())
+  processedAt DateTime?
+  status      String    @default("received") // received | queued | done | failed
+  error       String?
+
+  @@index([status, receivedAt])
+  @@index([shopDomain, topic, receivedAt])
+}
