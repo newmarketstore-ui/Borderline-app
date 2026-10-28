@@ -78,6 +78,7 @@ type WindowForm = {
   web: boolean;
   memberOnly: boolean;
   active: boolean;
+  minSpendEqualsDiscount: boolean;
 };
 
 const toWindowForm = (w: LoaderData["windows"][number]): WindowForm => ({
@@ -91,6 +92,7 @@ const toWindowForm = (w: LoaderData["windows"][number]): WindowForm => ({
   web: w.channels.length === 0 || w.channels.includes("web"),
   memberOnly: w.memberOnly,
   active: w.active,
+  minSpendEqualsDiscount: Boolean(w.minSpendEqualsDiscount),
 });
 
 const NEW_WINDOW: WindowForm = {
@@ -104,6 +106,7 @@ const NEW_WINDOW: WindowForm = {
   web: false,
   memberOnly: true,
   active: true,
+  minSpendEqualsDiscount: false,
 };
 
 const ROUNDING_LABELS: Record<RedeemRounding, string> = {
@@ -172,6 +175,7 @@ export default function LoyaltySettingsPage() {
             channels: w.pos && w.web ? [] : [w.pos ? "pos" : null, w.web ? "web" : null].filter(Boolean),
             memberOnly: w.memberOnly,
             active: w.active,
+            minSpendEqualsDiscount: w.minSpendEqualsDiscount,
           })),
         ),
       },
@@ -413,6 +417,11 @@ export default function LoyaltySettingsPage() {
                     label="Members only"
                     checked={w.memberOnly}
                     onChange={(e: Event) => setWin(i, { memberOnly: fieldChecked(e) })}
+                  />
+                  <s-checkbox
+                    label="Min. order = discount"
+                    checked={w.minSpendEqualsDiscount}
+                    onChange={(e: Event) => setWin(i, { minSpendEqualsDiscount: fieldChecked(e) })}
                   />
                   <s-checkbox label="Active" checked={w.active} onChange={(e: Event) => setWin(i, { active: fieldChecked(e) })} />
                   <s-button tone="critical" onClick={() => setWins((ws) => ws.filter((_, j) => j !== i))}>

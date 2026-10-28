@@ -258,7 +258,7 @@ export default function LoyaltyMember() {
     .filter((w) => w.active)
     .map(
       (w) =>
-        `${w.label || "Window"}: ${WEEKDAY_NAMES[w.dayOfWeek]}${w.startHour !== null || w.endHour !== null ? ` ${w.startHour ?? 0}:00-${w.endHour ?? 24}:00` : ""} x${w.multiplier}${w.channels.length ? ` (${w.channels.join("/")})` : ""}${w.memberOnly ? ", members only" : ""}`,
+        `${w.label || "Window"}: ${WEEKDAY_NAMES[w.dayOfWeek]}${w.startHour !== null || w.endHour !== null ? ` ${w.startHour ?? 0}:00-${w.endHour ?? 24}:00` : ""} x${w.multiplier}${w.channels.length ? ` (${w.channels.join("/")})` : ""}${w.memberOnly ? ", members only" : ""}${w.minSpendEqualsDiscount ? ", min. order = discount" : ""}`,
     );
 
   return (
@@ -375,7 +375,7 @@ export default function LoyaltyMember() {
               <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
                 <s-text>
                   {quote.ok
-                    ? `${formatCents(quote.amountCents)} off before tax (worth ${formatCents(quote.faceValueCents)}${redeemRules.redeemAmountIsTaxInclusive ? ` incl. ${Math.round(redeemRules.assumedTaxRate * 100)}% tax` : ""})${quote.multiplier !== 1 ? ` · ${quote.window?.label ?? "redeem window"} x${quote.multiplier} applied` : ""}`
+                    ? `${formatCents(quote.amountCents)} off before tax (worth ${formatCents(quote.faceValueCents)}${redeemRules.redeemAmountIsTaxInclusive ? ` incl. ${Math.round(redeemRules.assumedTaxRate * 100)}% tax` : ""})${quote.multiplier !== 1 ? ` · ${quote.window?.label ?? "redeem window"} x${quote.multiplier} applied` : ""}${quote.minSubtotalCents ? ` · order subtotal must be at least ${formatCents(quote.minSubtotalCents)}` : ""}`
                     : quote.error}
                 </s-text>
               </s-box>

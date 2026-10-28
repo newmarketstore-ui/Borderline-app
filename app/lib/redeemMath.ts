@@ -22,6 +22,7 @@ export type RedeemWindowRule = {
   channels: string[]; // 空 = 所有渠道
   memberOnly: boolean;
   active: boolean;
+  minSpendEqualsDiscount?: boolean; // 命中时折扣码要求订单小计 ≥ 折扣额（Appstle 周三规则）
 };
 
 export type RedeemQuoteRules = {
@@ -48,7 +49,8 @@ export type RedemptionQuote = {
   points: number;
   channel: RedeemChannel;
   multiplier: number;
-  window: { id: string | null; label: string | null } | null;
+  window: { id: string | null; label: string | null; minSpendEqualsDiscount: boolean } | null;
+  minSubtotalCents: number | null; // 折扣码的最低订单小计（命中 minSpendEqualsDiscount 窗口时 = amountCents）
   faceValueCents: number; // 顾客感知价值（含税口径），= 分 × 倍数 / 每 $1 分数
   amountCents: number; // 实际发出的固定金额折扣（税前）
   taxRate: number;
@@ -134,9 +136,12 @@ export function quoteRedemption(input: QuoteInput, rules: RedeemQuoteRules, wind
     points: input.points,
     channel: input.channel,
     multiplier,
-    window: win ? { id: win.id ?? null, label: win.label ?? null } : null,
+    window: win
+      ? { id: win.id ?? null, label: win.label ?? null, minSpendEqualsDiscount: Boolean(win.minSpendEqualsDiscount) }
+      : null,
     faceValueCents,
     amountCents,
+    minSubtotalCents: win?.minSpendEqualsDiscount && amountCents > 0 ? amountCents : null,
     taxRate: rules.redeemAmountIsTaxInclusive ? rules.assumedTaxRate : 0,
     rounding: rules.redeemRounding,
   };
@@ -163,6 +168,34 @@ export function redeemPointOptions(
   const out: number[] = [];
   for (let p = start; p <= balance && out.length < maxOptions; p += step) out.push(p);
   return out;
+}
+
+/**
+ * 兑换码的 discountCodeBasicCreate 输入。customerSelection 已废弃，用 context.customers。
+ * minSubtotalCents 非空 → minimumRequirement.subtotal（订单小计 ≥ 该金额才能用；POS 同样校验）。
+ */
+export function redemptionDiscountInput(
+  r: { code: string; amountCents: number; expiresAt: Date; minSubtotalCents?: number | null },
+  customerGid: string,
+  now: Date,
+) {
+  const dollars = (cents: number) => (cents / 100).toFixed(2);
+  return {
+    title: r.code,
+    code: r.code,
+    startsAt: now.toISOString(),
+    endsAt: r.expiresAt.toISOString(),
+    context: { customers: { add: [customerGid] } },
+    customerGets: {
+      value: { discountAmount: { amount: dollars(r.amountCents), appliesOnEachItem: false } },
+      items: { all: true },
+    },
+    ...(r.minSubtotalCents && r.minSubtotalCents > 0
+      ? { minimumRequirement: { subtotal: { greaterThanOrEqualToSubtotal: dollars(r.minSubtotalCents) } } }
+      : {}),
+    appliesOncePerCustomer: true,
+    usageLimit: 1,
+  };
 }
 
 export const formatCents = (cents: number) =>

@@ -191,6 +191,7 @@ export const DEFAULT_REDEEM_WINDOWS: RedeemWindowRule[] = [
     channels: ["pos"],
     memberOnly: true,
     active: true,
+    minSpendEqualsDiscount: true, // Appstle 周三规则：最低订单金额 = 折扣额
   },
 ];
 
@@ -210,6 +211,7 @@ export async function getRedeemWindows(shop: string, settings?: Pick<LoyaltySett
       channels: r.channels,
       memberOnly: r.memberOnly,
       active: r.active,
+      minSpendEqualsDiscount: r.minSpendEqualsDiscount,
     }),
   );
 }
@@ -267,6 +269,7 @@ export function parseWindowsJson(raw: string): { ok: true; value: RedeemWindowRu
       channels,
       memberOnly: Boolean(w.memberOnly),
       active: w.active === undefined ? true : Boolean(w.active),
+      minSpendEqualsDiscount: Boolean(w.minSpendEqualsDiscount),
     };
   });
   return errors.length ? { ok: false, errors } : { ok: true, value };
@@ -288,6 +291,7 @@ export async function saveRedeemWindows(shop: string, windows: RedeemWindowRule[
         channels: w.channels,
         memberOnly: w.memberOnly,
         active: w.active,
+        minSpendEqualsDiscount: Boolean(w.minSpendEqualsDiscount),
       })),
     }),
   ]);

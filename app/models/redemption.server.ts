@@ -9,7 +9,13 @@ import type { Redemption } from "@prisma/client";
 
 import prisma from "../db.server";
 import { isMember } from "../lib/membership";
-import { formatCents, quoteRedemption as quotePure, type RedeemChannel, type RedemptionQuote } from "../lib/redeemMath";
+import {
+  formatCents,
+  quoteRedemption as quotePure,
+  redemptionDiscountInput,
+  type RedeemChannel,
+  type RedemptionQuote,
+} from "../lib/redeemMath";
 import { insertLedger, withMemberLock } from "./ledger.server";
 import { getLoyaltySettings, getRedeemWindows, gql, type AdminGraphql, type LoyaltySettings } from "./loyalty.server";
 
@@ -102,22 +108,8 @@ export type IssueResult =
   | { ok: true; applied: boolean; redemption: Redemption; quote: RedemptionQuote | null }
   | { ok: false; error: string; quote: RedemptionQuote | null; redemption?: Redemption };
 
-/** 发码输入（discountCodeBasicCreate）。customerSelection 已废弃，用 context.customers。 */
-export function discountInput(r: { code: string; amountCents: number; expiresAt: Date }, customerGid: string, now: Date) {
-  return {
-    title: r.code,
-    code: r.code,
-    startsAt: now.toISOString(),
-    endsAt: r.expiresAt.toISOString(),
-    context: { customers: { add: [customerGid] } },
-    customerGets: {
-      value: { discountAmount: { amount: (r.amountCents / 100).toFixed(2), appliesOnEachItem: false } },
-      items: { all: true },
-    },
-    appliesOncePerCustomer: true,
-    usageLimit: 1,
-  };
-}
+/** 发码输入（discountCodeBasicCreate）：纯函数在 app/lib/redeemMath.ts，单测覆盖。 */
+export const discountInput = redemptionDiscountInput;
 
 export async function issueRedemption(
   params: {
@@ -174,6 +166,7 @@ export async function issueRedemption(
             faceValueCents: quote.faceValueCents,
             taxRate: quote.taxRate,
             rounding: quote.rounding,
+            minSubtotalCents: quote.minSubtotalCents,
           },
         },
       });
@@ -206,7 +199,12 @@ export async function issueRedemption(
       discountCodeBasicCreate: { codeDiscountNode: { id: string } | null; userErrors: UserError[] };
     }>(admin, DISCOUNT_CREATE, {
       input: discountInput(
-        { code: redemption.discountCode!, amountCents: redemption.amountCents, expiresAt: redemption.expiresAt! },
+        {
+          code: redemption.discountCode!,
+          amountCents: redemption.amountCents,
+          expiresAt: redemption.expiresAt!,
+          minSubtotalCents: quote.minSubtotalCents,
+        },
         member.shopifyCustomerId,
         now,
       ),

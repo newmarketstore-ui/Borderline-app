@@ -229,19 +229,21 @@ model Membership {
 // 兑换倍数窗口（Appstle「Double Redeem Every Wednesday」= 周三 ×2，只限 POS、只限会员）。
 // dayOfWeek 0 = 周日 … 6 = 周六，按 timezone 当地时间；startHour 含、endHour 不含，都空 = 全天。
 model RedeemWindow {
-  id         String   @id @default(cuid())
-  shopDomain String
-  label      String?
-  dayOfWeek  Int
-  startHour  Int?
-  endHour    Int?
-  timezone   String   @default("America/Toronto")
-  multiplier Decimal  @default(2) @db.Decimal(6, 3)
-  channels   String[] @default(["pos"]) // pos | web；空 = 所有渠道
-  memberOnly Boolean  @default(true)
-  active     Boolean  @default(true)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  id                     String   @id @default(cuid())
+  shopDomain             String
+  label                  String?
+  dayOfWeek              Int
+  startHour              Int?
+  endHour                Int?
+  timezone               String   @default("America/Toronto")
+  multiplier             Decimal  @default(2) @db.Decimal(6, 3)
+  channels               String[] @default(["pos"]) // pos | web；空 = 所有渠道
+  memberOnly             Boolean  @default(true)
+  // Appstle 周三规则要求「订单金额 ≥ 折扣金额」：true 时发码带 minimumRequirement.subtotal = 折扣额（POS 也认）
+  minSpendEqualsDiscount Boolean  @default(false)
+  active                 Boolean  @default(true)
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
 
   @@index([shopDomain])
 }

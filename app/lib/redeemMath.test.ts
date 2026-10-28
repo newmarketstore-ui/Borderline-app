@@ -5,6 +5,7 @@ import {
   quoteRedemption,
   redeemAmountCents,
   redeemPointOptions,
+  redemptionDiscountInput,
   type RedeemQuoteRules,
   type RedeemWindowRule,
 } from "./redeemMath";
@@ -123,6 +124,43 @@ describe("quoteRedemption", () => {
     const r = rules({ minRedeemPoints: 250, redeemStepPoints: 50 });
     expect(quoteRedemption({ ...base, points: 250 }, r, []).ok).toBe(true);
     expect(quoteRedemption({ ...base, points: 275 }, r, []).ok).toBe(false);
+  });
+});
+
+describe("Wednesday minimum order = discount amount (minSpendEqualsDiscount)", () => {
+  const base = { points: 500, channel: "pos" as const, at: WED_0000_EDT, isMember: true, balance: 1000 };
+  const wedMin = { ...wednesday, minSpendEqualsDiscount: true };
+  const code = { code: "POINTS-500-ABC123-WXYZ", expiresAt: new Date("2026-10-29T04:00:00Z") };
+  const now = new Date("2026-10-28T04:00:00Z");
+
+  it("quote carries a minimum subtotal equal to the discount when the window requires it", () => {
+    const q = quoteRedemption(base, rules(), [wedMin]);
+    expect(q.ok).toBe(true);
+    expect(q.amountCents).toBe(8850);
+    expect(q.minSubtotalCents).toBe(8850);
+    expect(q.window?.minSpendEqualsDiscount).toBe(true);
+  });
+  it("no minimum when the window does not require it, or outside the window", () => {
+    expect(quoteRedemption(base, rules(), [wednesday]).minSubtotalCents).toBeNull();
+    expect(quoteRedemption({ ...base, at: THU_0000_EDT }, rules(), [wedMin]).minSubtotalCents).toBeNull();
+    expect(quoteRedemption({ ...base, channel: "web" }, rules(), [wedMin]).minSubtotalCents).toBeNull();
+  });
+  it("discount input gets minimumRequirement.subtotal = discount amount", () => {
+    const q = quoteRedemption(base, rules(), [wedMin]);
+    const input = redemptionDiscountInput(
+      { ...code, amountCents: q.amountCents, minSubtotalCents: q.minSubtotalCents },
+      "gid://shopify/Customer/1",
+      now,
+    );
+    expect(input.customerGets.value.discountAmount.amount).toBe("88.50");
+    expect(input.minimumRequirement).toEqual({ subtotal: { greaterThanOrEqualToSubtotal: "88.50" } });
+    expect(input.context).toEqual({ customers: { add: ["gid://shopify/Customer/1"] } });
+    expect(input.usageLimit).toBe(1);
+  });
+  it("discount input has no minimumRequirement otherwise", () => {
+    const input = redemptionDiscountInput({ ...code, amountCents: 4425, minSubtotalCents: null }, "gid://shopify/Customer/1", now);
+    expect(input).not.toHaveProperty("minimumRequirement");
+    expect(input.customerGets.value.discountAmount.amount).toBe("44.25");
   });
 });
 
