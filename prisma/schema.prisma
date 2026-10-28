@@ -12,21 +12,21 @@ datasource db {
 }
 
 model Session {
-  id            String    @id
-  shop          String
-  state         String
-  isOnline      Boolean   @default(false)
-  scope         String?
-  expires       DateTime?
-  accessToken   String
-  userId        BigInt?
-  firstName     String?
-  lastName      String?
-  email         String?
-  accountOwner  Boolean   @default(false)
-  locale        String?
-  collaborator  Boolean?  @default(false)
-  emailVerified Boolean?  @default(false)
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
   refreshToken        String?
   refreshTokenExpires DateTime?
 }
@@ -98,23 +98,26 @@ model ManualDailyMetricAudit {
 
 // 会员：主键语义 = Shopify Customer GID；邮箱 / 手机只做辅助匹配。
 model Member {
-  id                String    @id @default(cuid())
-  shopifyCustomerId String    @unique // gid://shopify/Customer/123
-  shopDomain        String
-  email             String?
-  phone             String?
-  firstName         String?
-  lastName          String?
-  tier              String    @default("standard") // standard | paid
-  paidUntil         DateTime?
-  balanceCached     Int       @default(0) // 可用积分 = sum(delta) where availableAt <= now
-  pendingCached     Int       @default(0) // 待确认积分 = sum(delta) where availableAt > now
-  source            String // order | appstle_migrated | staff | customer_update
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  id                 String    @id @default(cuid())
+  shopifyCustomerId  String    @unique // gid://shopify/Customer/123
+  shopDomain         String
+  email              String?
+  phone              String?
+  firstName          String?
+  lastName           String?
+  tier               String    @default("standard") // standard | paid
+  paidUntil          DateTime?
+  balanceCached      Int       @default(0) // 可用积分 = sum(delta) where availableAt <= now
+  pendingCached      Int       @default(0) // 待确认积分 = sum(delta) where availableAt > now
+  source             String // order | appstle_migrated | staff | customer_update
+  tags               String[]  @default([]) // Shopify 客户标签快照（会员判断看 LoyaltyConfig.memberTag）
+  membershipSyncedAt DateTime? // 上次从 Shopify 拉标签 + appstle_membership.subscriptions 的时间；null = 会员身份未知
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   ledger      PointsLedger[]
   redemptions Redemption[]
+  memberships Membership[]
 
   @@index([shopDomain, email])
   @@index([shopDomain, phone])
@@ -160,6 +163,8 @@ model Redemption {
   channel        String // web | pos
   issuedBy       String // system | 员工邮箱
   expiresAt      DateTime?
+  idempotencyKey String?   @unique // 店员表单键：同一次提交重放只发一张码
+  meta           Json? // 报价明细（倍数、税率、取整方式、命中的窗口）
   createdAt      DateTime  @default(now())
   updatedAt      DateTime  @updatedAt
 
@@ -172,21 +177,73 @@ model Redemption {
 
 // 积分规则：每个店一行（老板拍板后在 /app/loyalty/settings 改）。
 model LoyaltyConfig {
-  id                    String   @id @default(cuid())
-  shopDomain            String   @unique
-  pointsPerDollar       Decimal  @default(1) @db.Decimal(10, 4)
-  redeemPointsPerDollar Int      @default(100)
-  minRedeemPoints       Int      @default(500)
-  redeemStepPoints      Int      @default(100)
-  excludedProductTypes  String[] @default([])
-  excludedTags          String[] @default([])
-  earnOnShipping        Boolean  @default(false)
-  earnOnTax             Boolean  @default(false)
-  pendingDays           Int      @default(0)
-  expiryMonths          Int?
-  paidTierMultiplier    Decimal  @default(1) @db.Decimal(6, 3)
-  updatedBy             String?
-  updatedAt             DateTime @updatedAt
+  id                         String   @id @default(cuid())
+  shopDomain                 String   @unique
+  pointsPerDollar            Decimal  @default(1) @db.Decimal(10, 4)
+  redeemPointsPerDollar      Int      @default(10) // Appstle：10 分 = $1（含税口径，见 redeemAmountIsTaxInclusive）
+  minRedeemPoints            Int      @default(500)
+  redeemStepPoints           Int      @default(100)
+  excludedProductTypes       String[] @default([])
+  excludedTags               String[] @default(["Gift Card", "Service"])
+  earnOnShipping             Boolean  @default(false)
+  earnOnTax                  Boolean  @default(false)
+  pendingDays                Int      @default(0)
+  expiryMonths               Int?
+  paidTierMultiplier         Decimal  @default(1) @db.Decimal(6, 3)
+  // ── 2026-10-28 按 Appstle 实际规则补齐（reports/积分迁移_Appstle导出_2026-10-28.md §七）──
+  earnRequiresMember         Boolean  @default(true) // 只有付费会员赚分
+  memberTag                  String   @default("gold-membership")
+  excludeDiscountedItems     Boolean  @default(true) // 有任何折扣分摊的行不计分
+  redeemAmountIsTaxInclusive Boolean  @default(true) // 10 分 = $1 含税 → 税前折扣 = 分 / 10 / (1 + 税率)
+  assumedTaxRate             Decimal  @default(0.13) @db.Decimal(6, 4)
+  redeemRounding             String   @default("nearest_cent") // nearest_cent | floor_cent | up_10_cents（Appstle 手填 44.30 ≈ up_10_cents）
+  redeemRequiresMember       Boolean  @default(true) // Appstle 兑换规则几乎都限 gold-membership
+  redeemCodePrefix           String   @default("POINTS")
+  redeemExpiryHours          Int      @default(24)
+  updatedBy                  String?
+  updatedAt                  DateTime @updatedAt
+}
+
+// 付费会员资格：一人可多条（Appstle 合约 / 手工 / 以后自家会员商品订单）。
+// 会员判断 = 客户标签含 LoyaltyConfig.memberTag 或 任一条 status = active 且未过 endsAt（见 app/lib/membership.ts）。
+model Membership {
+  id         String    @id @default(cuid())
+  memberId   String
+  source     String // appstle | manual | shopify_order
+  externalId String? // Appstle 合约 id / 订单 GID；同 source 内唯一，同步时按它 upsert
+  planName   String?
+  status     String // active | cancelled | expired
+  startedAt  DateTime?
+  renewsAt   DateTime?
+  endsAt     DateTime?
+  raw        Json?
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  member Member @relation(fields: [memberId], references: [id], onDelete: Cascade)
+
+  @@unique([source, externalId])
+  @@index([memberId])
+}
+
+// 兑换倍数窗口（Appstle「Double Redeem Every Wednesday」= 周三 ×2，只限 POS、只限会员）。
+// dayOfWeek 0 = 周日 … 6 = 周六，按 timezone 当地时间；startHour 含、endHour 不含，都空 = 全天。
+model RedeemWindow {
+  id         String   @id @default(cuid())
+  shopDomain String
+  label      String?
+  dayOfWeek  Int
+  startHour  Int?
+  endHour    Int?
+  timezone   String   @default("America/Toronto")
+  multiplier Decimal  @default(2) @db.Decimal(6, 3)
+  channels   String[] @default(["pos"]) // pos | web；空 = 所有渠道
+  memberOnly Boolean  @default(true)
+  active     Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([shopDomain])
 }
 
 // 迁移当天每个客户 Appstle 原始 JSON 原样留底（只读）。
