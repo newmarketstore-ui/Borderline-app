@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { earnGate, hasMemberTag, isMember, paidUntilFrom, parseAppstleSubscriptions, parseTagList } from "./membership";
+import {
+  earnGate,
+  hasMemberTag,
+  isMember,
+  orderHasMembershipProduct,
+  paidUntilFrom,
+  parseAppstleSubscriptions,
+  parseTagList,
+} from "./membership";
 import { computeEarnPoints, type EarnLine } from "./loyaltyMath";
 
 const NOW = new Date("2026-10-28T12:00:00Z");
@@ -121,5 +129,18 @@ describe("earnGate", () => {
   });
   it("everyone earns when the rule is off", () => {
     expect(earnGate({ ...on, earnRequiresMember: false }, null, NOW)).toEqual({ eligible: true, reason: "rule_off" });
+  });
+});
+
+describe("orderHasMembershipProduct", () => {
+  it("matches the Membership product tag case-insensitively", () => {
+    expect(orderHasMembershipProduct([{ tags: ["Jacket"] }, { tags: [" membership "] }])).toBe(true);
+    expect(orderHasMembershipProduct([{ tags: ["Membership"] }])).toBe(true);
+  });
+  it("needs the exact tag, and lines without product info do not match", () => {
+    expect(orderHasMembershipProduct([{ tags: ["gold-membership", "Memberships"] }])).toBe(false);
+    expect(orderHasMembershipProduct([{ tags: undefined }, { tags: null }, {}])).toBe(false);
+    expect(orderHasMembershipProduct([])).toBe(false);
+    expect(orderHasMembershipProduct([{ tags: ["Store Plan"] }], "store plan")).toBe(true);
   });
 });

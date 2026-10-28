@@ -150,6 +150,7 @@ async function main() {
           handleEarn(e, {
             getAdmin: async () => stubAdmin,
             enqueueSyncBalance: async () => null,
+            enqueueSyncMembership: async () => null,
           }),
         );
       },

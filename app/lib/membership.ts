@@ -108,6 +108,22 @@ export function paidUntilFrom(memberships: Array<MembershipLike & { renewsAt?: D
   return best;
 }
 
+// 付费会员商品（"Store Membership" $50）带的商品标签。
+export const MEMBERSHIP_PRODUCT_TAG = "Membership";
+
+/**
+ * 订单里有没有会员商品（商品标签含 Membership，不分大小写）。
+ * 用途：orders/paid 可能比 Appstle 打 gold-membership 标签先到，买会员的这一单不能因此不给分。
+ * lines 的 tags 为 undefined = 还没补商品信息（REST 订单行不带标签），调用方要先补。
+ */
+export function orderHasMembershipProduct(
+  lines: Array<{ tags?: string[] | null }>,
+  tag: string = MEMBERSHIP_PRODUCT_TAG,
+): boolean {
+  const want = norm(tag);
+  return Boolean(want) && lines.some((l) => (l.tags ?? []).some((t) => norm(t) === want));
+}
+
 /**
  * 赚分门槛（loyalty.earn 用）：earnRequiresMember 关掉时谁都赚；开着时只认会员。
  * member 为 null = 我们还不认识这个客户（没有 Member 行或从没同步过会员资格），调用方应先同步再判断。
