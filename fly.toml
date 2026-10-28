@@ -1,0 +1,21 @@
+app = "borderline-ai"
+primary_region = "yyz"
+
+[build]
+
+[env]
+  PORT = "3000"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  # 闲时挂起（保留内存快照，唤醒快且不重跑 prisma），访问时自动唤醒，省钱
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1

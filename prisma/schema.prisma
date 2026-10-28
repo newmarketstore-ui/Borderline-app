@@ -1,0 +1,91 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// 切到 Supabase Postgres。DATABASE_URL 见 .env。
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Session {
+  id            String    @id
+  shop          String
+  state         String
+  isOnline      Boolean   @default(false)
+  scope         String?
+  expires       DateTime?
+  accessToken   String
+  userId        BigInt?
+  firstName     String?
+  lastName      String?
+  email         String?
+  accountOwner  Boolean   @default(false)
+  locale        String?
+  collaborator  Boolean?  @default(false)
+  emailVerified Boolean?  @default(false)
+  refreshToken        String?
+  refreshTokenExpires DateTime?
+}
+
+// 员工每日手动录入：每个门店每天一条。
+model ManualDailyMetric {
+  id           String @id @default(cuid())
+  shopDomain   String
+  businessDate String // YYYY-MM-DD（America/Toronto）
+  timezone     String @default("America/Toronto")
+
+  locationId   String
+  locationName String?
+
+  // 到店总组数（客群组，一伙同行算 1 组）
+  storeVisitGroups Int @default(0)
+
+  // 各渠道主来源组数；unknown 由服务端按 总数-已知合计 计算，不让员工填
+  channelWalkIn         Int @default(0)
+  channelGoogleMaps     Int @default(0)
+  channelMeta           Int @default(0)
+  channelTiktok         Int @default(0)
+  channelXiaohongshu    Int @default(0)
+  channelReferral       Int @default(0)
+  channelRepeatCustomer Int @default(0)
+  channelWebsite        Int @default(0)
+  channelPhoneSms       Int @default(0)
+  channelOther          Int @default(0)
+  channelUnknown        Int @default(0)
+
+  // 客流影响因素（结构化多选标签）+ 自由备注
+  trafficFactors String[] @default([])
+  notes          String?
+
+  submittedByName  String?
+  submittedByEmail String?
+  submittedAt      DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  audits ManualDailyMetricAudit[]
+
+  @@unique([shopDomain, businessDate, locationId])
+  @@index([shopDomain, businessDate])
+  @@index([shopDomain, locationId])
+}
+
+// 审计日志：每次 create/update 写一条，记录前后值，便于追溯改数。
+model ManualDailyMetricAudit {
+  id         String   @id @default(cuid())
+  metricId   String
+  action     String // create | update
+  beforeJson Json?
+  afterJson  Json
+  actorName  String?
+  actorEmail String?
+  createdAt  DateTime @default(now())
+
+  metric ManualDailyMetric @relation(fields: [metricId], references: [id], onDelete: Cascade)
+
+  @@index([metricId])
+  @@index([createdAt])
+}
