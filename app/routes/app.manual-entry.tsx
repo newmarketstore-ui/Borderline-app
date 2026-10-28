@@ -13,6 +13,11 @@ import type { ManualMetricInput } from "../lib/metricValidation";
 
 type LocationOption = { id: string; name: string };
 
+// Polaris web component 事件：currentTarget 是对应的自定义元素
+const fieldValue = (e: Event) => (e.currentTarget as HTMLInputElement).value;
+const choiceValues = (e: Event) =>
+  (e.currentTarget as unknown as { values: string[] }).values;
+
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { admin, session } = await authenticate.admin(request);
 
@@ -102,7 +107,7 @@ type LoaderData = Awaited<ReturnType<typeof loader>>;
 function initForm(existing: LoaderData["existing"]) {
   const channels: Record<string, string> = {};
   for (const c of CHANNELS) {
-    channels[c.key] = existing ? String((existing as any)[c.field] ?? 0) : "";
+    channels[c.key] = existing ? String((existing as unknown as Record<string, unknown>)[c.field] ?? 0) : "";
   }
   return {
     storeVisitGroups: existing ? String(existing.storeVisitGroups ?? 0) : "",
@@ -262,7 +267,7 @@ export default function ManualEntry() {
             label="门店"
             name="locationId"
             value={data.locationId}
-            onChange={(e: any) => go(data.businessDate, e.currentTarget.value)}
+            onChange={(e: Event) => go(data.businessDate, fieldValue(e))}
           >
             {data.locations.map((l) => (
               <s-option key={l.id} value={l.id}>
@@ -279,8 +284,8 @@ export default function ManualEntry() {
           name="storeVisitGroups"
           min={0}
           value={form.storeVisitGroups}
-          onChange={(e: any) =>
-            setForm((f) => ({ ...f, storeVisitGroups: e.currentTarget.value }))
+          onChange={(e: Event) =>
+            setForm((f) => ({ ...f, storeVisitGroups: fieldValue(e) }))
           }
         />
       </s-section>
@@ -301,7 +306,7 @@ export default function ManualEntry() {
               name={`channel_${c.key}`}
               min={0}
               value={form.channels[c.key]}
-              onChange={(e: any) => setChannel(c.key, e.currentTarget.value)}
+              onChange={(e: Event) => setChannel(c.key, fieldValue(e))}
             />
           ))}
           <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
@@ -319,8 +324,8 @@ export default function ManualEntry() {
             name="trafficFactors"
             multiple
             values={form.trafficFactors}
-            onChange={(e: any) =>
-              setForm((f) => ({ ...f, trafficFactors: e.currentTarget.values }))
+            onChange={(e: Event) =>
+              setForm((f) => ({ ...f, trafficFactors: choiceValues(e) }))
             }
           >
             {TRAFFIC_FACTORS.map((t) => (
@@ -334,16 +339,16 @@ export default function ManualEntry() {
             name="notes"
             rows={3}
             value={form.notes}
-            onChange={(e: any) =>
-              setForm((f) => ({ ...f, notes: e.currentTarget.value }))
+            onChange={(e: Event) =>
+              setForm((f) => ({ ...f, notes: fieldValue(e) }))
             }
           />
           <s-text-field
             label="记录人（可选）"
             name="recordedBy"
             value={form.recordedBy}
-            onChange={(e: any) =>
-              setForm((f) => ({ ...f, recordedBy: e.currentTarget.value }))
+            onChange={(e: Event) =>
+              setForm((f) => ({ ...f, recordedBy: fieldValue(e) }))
             }
           />
         </s-stack>

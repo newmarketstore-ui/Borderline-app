@@ -7,7 +7,6 @@ import { torontoToday } from "../lib/dates";
 import { listManualMetrics, rowToChannels } from "../models/manualMetrics.server";
 import { CHANNELS } from "../lib/channels";
 
-const labelByKey = new Map(CHANNELS.map((c) => [c.key, c.label]));
 
 function topChannel(channels: Record<string, number>): string {
   let best = "";
@@ -78,7 +77,7 @@ export default function ManualHistory() {
               <s-stack direction="block" gap="small-200">
                 <s-stack direction="inline" gap="base" justifyContent="space-between">
                   <s-text>
-                    {r.businessDate}　{r.locationName}
+                    {r.businessDate}{"　"}{r.locationName}
                   </s-text>
                   <s-button
                     href={`/app/manual-entry?date=${r.businessDate}&location=${r.locationId}`}

@@ -74,7 +74,7 @@ export default function Index() {
               <s-stack direction="inline" gap="base" justifyContent="space-between">
                 <s-text>{s.name}</s-text>
                 <s-text>
-                  昨日 {s.yesterday ? "✅ 已填" : "⛔ 未填"}　今日{" "}
+                  昨日 {s.yesterday ? "✅ 已填" : "⛔ 未填"}{"　"}今日{" "}
                   {s.today ? "✅ 已填" : "—"}
                 </s-text>
                 <s-button href={`/app/manual-entry?date=${yesterday}&location=${s.id}`}>

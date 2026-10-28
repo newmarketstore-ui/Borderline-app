@@ -22,7 +22,7 @@ function inputToChannelColumns(input: ManualMetricInput): Record<string, number>
 // Prisma 行 → 对外 channels 映射（含 unknown）
 export function rowToChannels(row: ManualDailyMetric): Record<string, number> {
   const channels: Record<string, number> = {};
-  for (const c of CHANNELS) channels[c.key] = (row as any)[c.field] ?? 0;
+  for (const c of CHANNELS) channels[c.key] = ((row as unknown as Record<string, number | null>)[c.field] ?? 0);
   channels.unknown = row.channelUnknown ?? 0;
   return channels;
 }
