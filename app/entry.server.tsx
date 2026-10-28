@@ -5,6 +5,10 @@ import { createReadableStreamFromReadable } from "@react-router/node";
 import { type EntryContext } from "react-router";
 import { isbot } from "isbot";
 import { addDocumentResponseHeaders } from "./shopify.server";
+import { startJobsOnce } from "./jobs/worker.server";
+
+// 服务端启动时拉起 pg-boss worker（只启动一次；失败不影响页面，见 app/jobs/worker.server.ts）
+startJobsOnce();
 
 export const streamTimeout = 5000;
 
@@ -14,6 +18,7 @@ export default async function handleRequest(
   responseHeaders: Headers,
   reactRouterContext: EntryContext
 ) {
+  startJobsOnce(); // 已启动时是空操作；上次启动失败时在这里重试
   addDocumentResponseHeaders(request, responseHeaders);
   const userAgent = request.headers.get("user-agent");
   const callbackName = isbot(userAgent ?? '')
