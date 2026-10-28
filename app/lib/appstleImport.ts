@@ -43,6 +43,7 @@ export type ImportPlan = {
   member: { email: string | null; phone: string | null; firstName: string | null; lastName: string | null; tags: string[] };
   memberships: ParsedMembership[];
   hasMemberRecord: boolean;
+  raw: Record<string, unknown>; // Appstle 原始 customer_loyalty JSON（存进 MigrationSnapshot）
 };
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -231,6 +232,7 @@ export function planImportRow(
     },
     memberships: member?.subscriptions ?? [],
     hasMemberRecord: Boolean(member),
+    raw: row.raw,
   };
 }
 
