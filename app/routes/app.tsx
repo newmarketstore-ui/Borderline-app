@@ -21,6 +21,8 @@ export default function App() {
         <s-link href="/app">首页</s-link>
         <s-link href="/app/manual-entry">每日录入</s-link>
         <s-link href="/app/manual-history">历史记录</s-link>
+        <s-link href="/app/loyalty">Loyalty</s-link>
+        <s-link href="/app/loyalty/settings">Loyalty settings</s-link>
       </s-app-nav>
       <Outlet />
     </AppProvider>

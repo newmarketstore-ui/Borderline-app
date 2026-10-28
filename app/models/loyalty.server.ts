@@ -388,3 +388,13 @@ export async function adjustPoints(params: {
     createdBy: params.staff,
   });
 }
+
+/** 记账用的员工标识：在线 session 有邮箱就用邮箱；本应用默认离线 token，没有邮箱时用 Shopify 用户 ID。 */
+export function staffIdentity(
+  session: { onlineAccessInfo?: { associated_user?: { email?: string } } },
+  sessionToken?: { sub?: string } | null,
+): string {
+  const email = session.onlineAccessInfo?.associated_user?.email;
+  if (email) return email;
+  return sessionToken?.sub ? `shopify-user:${sessionToken.sub}` : "staff:unknown";
+}
