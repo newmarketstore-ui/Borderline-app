@@ -37,8 +37,12 @@ const orderNo = (n: number) => Number(`7${n}${RUN}`);
 const calls = {
   discountCreate: [] as Array<Record<string, unknown>>,
   deactivate: [] as string[],
+  storeCreditCredit: [] as Array<Record<string, unknown>>,
+  storeCreditDebit: [] as Array<Record<string, unknown>>,
 };
 let discountSeq = 0;
+let storeCreditSeq = 0;
+let storeCreditCents = 0;
 const PRODUCT_TAGS: Record<string, string[]> = {
   "gid://shopify/Product/1": [],
   "gid://shopify/Product/2": ["Service"],
@@ -96,6 +100,32 @@ const stubAdmin = {
         discountCodeBasicCreate: {
           codeDiscountNode: {
             id: `gid://shopify/DiscountCodeNode/${++discountSeq}${RUN}`,
+          },
+          userErrors: [],
+        },
+      });
+    }
+    if (query.includes("LoyaltyStoreCreditCredit")) {
+      calls.storeCreditCredit.push(v.input as Record<string, unknown>);
+      storeCreditCents += Math.round(Number((v.input as { creditAmount: { amount: string } }).creditAmount.amount) * 100);
+      return body({
+        storeCreditAccountCredit: {
+          storeCreditAccountTransaction: {
+            id: `gid://shopify/StoreCreditAccountCreditTransaction/${++storeCreditSeq}${RUN}`,
+            account: { id: `gid://shopify/StoreCreditAccount/1${RUN}`, balance: { amount: (storeCreditCents / 100).toFixed(2), currencyCode: "CAD" } },
+          },
+          userErrors: [],
+        },
+      });
+    }
+    if (query.includes("LoyaltyStoreCreditDebit")) {
+      calls.storeCreditDebit.push(v.input as Record<string, unknown>);
+      storeCreditCents -= Math.round(Number((v.input as { debitAmount: { amount: string } }).debitAmount.amount) * 100);
+      return body({
+        storeCreditAccountDebit: {
+          storeCreditAccountTransaction: {
+            id: `gid://shopify/StoreCreditAccountDebitTransaction/${++storeCreditSeq}${RUN}`,
+            account: { id: `gid://shopify/StoreCreditAccount/1${RUN}`, balance: { amount: (storeCreditCents / 100).toFixed(2), currencyCode: "CAD" } },
           },
           userErrors: [],
         },
@@ -217,7 +247,7 @@ async function main() {
     await import("../../app/jobs/loyaltyRefund.server");
   const { handleSweep } = await import("../../app/jobs/sweep.server");
   const { appendLedger } = await import("../../app/models/ledger.server");
-  const { issueRedemption } =
+  const { issueRedemption, reverseStoreCredit } =
     await import("../../app/models/redemption.server");
 
   const boss = await getBoss();
@@ -269,6 +299,40 @@ async function main() {
     });
   const ledgerOf = (memberId: string, type: string) =>
     prisma.pointsLedger.findMany({ where: { memberId, type } });
+
+  // 第 1–7 段沿用 Appstle 旧规则（这些检查写于 10/28）：会员才赚、1 倍、打折行不计、折扣码 10 分 = $1 含税、最低 500 步长 100。
+  // 第 8 段切到老板 10/29 新规则（默认值）：人人 1 分/$、付费 10 分/$、100 分 = $1 Store Credit。
+  const legacyRules = {
+    shopDomain: SHOP,
+    redeemPointsPerDollar: 10,
+    minRedeemPoints: 500,
+    redeemStepPoints: 100,
+    paidTierMultiplier: 1,
+    earnRequiresMember: true,
+    excludeDiscountedItems: true,
+    redeemMethod: "discount_code",
+    redeemAmountIsTaxInclusive: true,
+    redeemRequiresMember: true,
+    updatedBy: "smoke",
+  };
+  await prisma.loyaltyConfig.upsert({ where: { shopDomain: SHOP }, create: legacyRules, update: legacyRules });
+  // 规则行一落库，默认的「周三双倍」窗口就不再自动生效，这里显式建一条（第 6 段的周三检查要用）
+  await prisma.redeemWindow.deleteMany({ where: { shopDomain: SHOP } });
+  await prisma.redeemWindow.create({
+    data: {
+      shopDomain: SHOP,
+      label: "Double Redeem Every Wednesday",
+      dayOfWeek: 3,
+      startHour: null,
+      endHour: null,
+      timezone: "America/Toronto",
+      multiplier: 2,
+      channels: ["pos"],
+      memberOnly: true,
+      active: true,
+      minSpendEqualsDiscount: true,
+    },
+  });
 
   try {
     await work(QUEUES.earn, (e) => handleEarn(e, earnDeps));
@@ -563,6 +627,79 @@ async function main() {
       },
     );
 
+    // 8. 老板 10/29 新规则：删掉旧规则行 → 用默认值（人人 1 分/$、付费会员 10 分/$、1000 分 = $10 Store Credit）
+    await prisma.loyaltyConfig.delete({ where: { shopDomain: SHOP } });
+    const ORDER_B2 = orderPayload(5, NON_MEMBER_B, [{ id: 41, product_id: 1, price: "80.00" }]);
+    const evB2 = await deliver("orders/paid", QUEUES.earn, ORDER_B2);
+    const b2 = await member(NON_MEMBER_B);
+    const earnB2 = await prisma.pointsLedger.findUnique({
+      where: { type_referenceId: { type: "earn", referenceId: ORDER_B2.admin_graphql_api_id } },
+    });
+    check(
+      "new rules: non-member with a profile earns 1 pt/$ (80)",
+      evB2.status === "done" && earnB2?.delta === 80 && b2?.tier === "standard",
+      { note: evB2.error, delta: earnB2?.delta, tier: b2?.tier },
+    );
+    const ORDER_A2 = orderPayload(6, MEMBER_A, [{ id: 51, product_id: 1, price: "80.00" }]);
+    const evA2b = await deliver("orders/paid", QUEUES.earn, ORDER_A2);
+    const earnA2 = await prisma.pointsLedger.findUnique({
+      where: { type_referenceId: { type: "earn", referenceId: ORDER_A2.admin_graphql_api_id } },
+    });
+    check(
+      "new rules: paid member earns 10 pt/$ (800)",
+      evA2b.status === "done" && earnA2?.delta === 800,
+      { note: evA2b.error, delta: earnA2?.delta },
+    );
+    a = await member(MEMBER_A);
+    const balanceBeforeSC = a!.balanceCached;
+    const keySC = randomUUID();
+    const sc = await issueRedemption(
+      { memberId: a!.id, points: 1000, channel: "pos", issuedBy: "smoke", idempotencyKey: keySC },
+      { getAdmin: async () => stubAdmin },
+    );
+    a = await member(MEMBER_A);
+    check(
+      "store credit: 1000 pts -> $10.00 credited, transaction id saved, balance -1000",
+      sc.ok &&
+        sc.redemption.method === "store_credit" &&
+        sc.redemption.status === "credited" &&
+        sc.redemption.amountCents === 1000 &&
+        Boolean(sc.redemption.storeCreditTransactionId) &&
+        a?.balanceCached === balanceBeforeSC - 1000 &&
+        calls.storeCreditCredit.length === 1 &&
+        (calls.storeCreditCredit[0] as { notify?: boolean }).notify === true,
+      sc.ok ? { status: sc.redemption.status, amount: sc.redemption.amountCents, balance: a?.balanceCached } : sc.error,
+    );
+    const scReplay = await issueRedemption(
+      { memberId: a!.id, points: 1000, channel: "pos", issuedBy: "smoke", idempotencyKey: keySC },
+      { getAdmin: async () => stubAdmin },
+    );
+    check(
+      "store credit replay (same form key): nothing new credited",
+      scReplay.ok && !scReplay.applied && calls.storeCreditCredit.length === 1,
+    );
+    const badStep = await issueRedemption(
+      { memberId: a!.id, points: 1500, channel: "pos", issuedBy: "smoke", idempotencyKey: randomUUID() },
+      { getAdmin: async () => stubAdmin },
+    );
+    check("store credit: 1500 pts rejected by the 1000-point step", !badStep.ok && /steps of 1000/.test(badStep.error));
+    const scRev = sc.ok ? await reverseStoreCredit(sc.redemption.id, "smoke", "customer changed their mind", { getAdmin: async () => stubAdmin }) : { ok: false as const, error: "n/a" };
+    a = await member(MEMBER_A);
+    const scRow = sc.ok ? await prisma.redemption.findUnique({ where: { id: sc.redemption.id } }) : null;
+    const scRelease = sc.ok ? await prisma.pointsLedger.findUnique({ where: { type_referenceId: { type: "redeem_release", referenceId: `redemption:${sc.redemption.id}` } } }) : null;
+    check(
+      "store credit reversed: debit called, status cancelled, 1000 pts returned",
+      scRev.ok &&
+        scRow?.status === "cancelled" &&
+        Boolean(scRow?.storeCreditReversalId) &&
+        scRelease?.delta === 1000 &&
+        a?.balanceCached === balanceBeforeSC &&
+        calls.storeCreditDebit.length === 1,
+      { ok: scRev.ok, status: scRow?.status, balance: a?.balanceCached },
+    );
+    const scRev2 = sc.ok ? await reverseStoreCredit(sc.redemption.id, "smoke", "again", { getAdmin: async () => stubAdmin }) : { ok: true as const };
+    check("store credit reverse replay: refused, no second debit", !scRev2.ok && calls.storeCreditDebit.length === 1);
+
     const totals = {
       members: await prisma.member.count({ where: { shopDomain: SHOP } }),
       ledgerRows: await prisma.pointsLedger.count({
@@ -584,6 +721,8 @@ async function main() {
     await prisma.webhookEvent
       .deleteMany({ where: { id: { in: eventIds } } })
       .catch(() => undefined);
+    await prisma.loyaltyConfig.deleteMany({ where: { shopDomain: SHOP } }).catch(() => undefined);
+    await prisma.redeemWindow.deleteMany({ where: { shopDomain: SHOP } }).catch(() => undefined);
     await boss.stop({ graceful: false, wait: true });
     await prisma.$disconnect();
   }

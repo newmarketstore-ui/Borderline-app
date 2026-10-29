@@ -127,6 +127,7 @@ async function main() {
       includeAnomalies: false,
       pendingDays: 0,
       now,
+      multiplier: 10, // 与导入脚本默认 migrationPointsMultiplier 一致（Appstle 10 分 = $1 → 我们 100 分 = $1）
     }),
   );
   const expected = summarizePlans(plans, MEMBER_TAG);

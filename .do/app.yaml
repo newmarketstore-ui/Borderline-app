@@ -28,7 +28,7 @@ services:
       - key: SHOPIFY_APP_URL
         value: ${APP_URL}                          # 首次部署后换成自定义域名
       - key: SCOPES
-        value: read_all_orders,read_analytics,read_customers,read_inventory,read_locations,read_orders,read_product_feeds,read_product_listings,read_products,read_reports,write_customers,write_discounts,write_orders
+        value: read_all_orders,read_analytics,read_customers,read_inventory,read_locations,read_orders,read_product_feeds,read_product_listings,read_products,read_reports,read_store_credit_accounts,write_customers,write_discounts,write_orders,write_store_credit_account_transactions
       - key: SHOPIFY_API_SECRET
         type: SECRET
         value: ""                                  # 部署时在 DO 里填

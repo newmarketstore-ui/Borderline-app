@@ -1,0 +1,23 @@
+# 顾客账户扩展（新版客户账户 shopify.com/69145198847/account）：
+# - 全页「Rewards」：余额、会员档、最近流水、一键换 Store Credit
+# - 订单列表页顶部小卡：余额 + 入口
+api_version = "2026-10"
+
+[[extensions]]
+name = "loyalty-account"
+handle = "loyalty-account"
+type = "ui_extension"
+uid = "8ea3c599-0904-df5e-db42-642a579c982e53dc2001"
+
+[[extensions.targeting]]
+module = "./src/RewardsPage.jsx"
+target = "customer-account.page.render"
+
+[[extensions.targeting]]
+module = "./src/OrderIndexBlock.jsx"
+target = "customer-account.order-index.block.render"
+
+[extensions.capabilities]
+api_access = true
+# 调我们后端 /api/account/*（Shopify 要求显式打开网络访问）
+network_access = true

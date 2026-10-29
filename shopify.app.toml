@@ -7,7 +7,7 @@ embedded = true
 
 [access_scopes]
 # Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
-scopes = "read_all_orders,read_analytics,read_customers,read_inventory,read_locations,read_orders,read_product_feeds,read_product_listings,read_products,read_reports,write_customers,write_discounts,write_orders"
+scopes = "read_all_orders,read_analytics,read_customers,read_inventory,read_locations,read_orders,read_product_feeds,read_product_listings,read_products,read_reports,read_store_credit_accounts,write_customers,write_discounts,write_orders,write_store_credit_account_transactions"
 optional_scopes = [ ]
 use_legacy_install_flow = false
 
@@ -51,6 +51,12 @@ api_version = "2026-04"
   [[webhooks.subscriptions]]
   uri = "/webhooks/shop/redact"
   compliance_topics = [ "shop/redact" ]
+
+# 店面 App Proxy：主题 / 顾客端 JS 调 https://<店>/apps/loyalty/* → 我们的 /proxy/loyalty/*（Shopify 签名 + logged_in_customer_id）
+[app_proxy]
+url = "https://borderline-ai.fly.dev/proxy/loyalty"
+subpath = "loyalty"
+prefix = "apps"
 
 [auth]
 redirect_urls = [

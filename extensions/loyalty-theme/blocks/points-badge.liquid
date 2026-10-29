@@ -1,0 +1,36 @@
+{%- comment -%}
+  商品页积分提示（主题 app block，放在价格附近）：
+  "Earn up to N points · paid members earn M"。价格按当前变体，从 /apps/loyalty/estimate 取规则（可缓存 5 分钟）。
+  不改 BL_winter 主题代码；在主题编辑器里把这个 block 拖进商品信息区即可。
+{%- endcomment -%}
+{%- assign price_cents = product.selected_or_first_available_variant.price -%}
+<div
+  class="bl-points-badge"
+  data-bl-points-badge
+  data-cents="{{ price_cents }}"
+  data-label-standard="{{ block.settings.label_standard | escape }}"
+  data-label-paid="{{ block.settings.label_paid | escape }}"
+  data-label-member="{{ block.settings.label_member | escape }}"
+  data-logged-in="{% if customer %}1{% else %}0{% endif %}"
+  style="font-size: {{ block.settings.font_size }}px; color: {{ block.settings.color }}; margin: {{ block.settings.margin }}px 0;"
+  hidden
+>
+  <span class="bl-points-badge__icon" aria-hidden="true">★</span>
+  <span class="bl-points-badge__text" data-bl-points-text></span>
+</div>
+<script src="{{ 'loyalty.js' | asset_url }}" defer></script>
+
+{% schema %}
+{
+  "name": "Points badge",
+  "target": "section",
+  "settings": [
+    { "type": "text", "id": "label_standard", "label": "Text (guest / member)", "default": "Earn {{points}} points with this item" },
+    { "type": "text", "id": "label_paid", "label": "Text (paid member)", "default": "Earn {{points}} points as a paid member" },
+    { "type": "text", "id": "label_member", "label": "Suffix when not a paid member", "default": "· paid members earn {{paid}}" },
+    { "type": "range", "id": "font_size", "label": "Font size", "min": 11, "max": 18, "step": 1, "default": 13 },
+    { "type": "color", "id": "color", "label": "Text color", "default": "#202321" },
+    { "type": "range", "id": "margin", "label": "Vertical margin (px)", "min": 0, "max": 24, "step": 2, "default": 8 }
+  ]
+}
+{% endschema %}

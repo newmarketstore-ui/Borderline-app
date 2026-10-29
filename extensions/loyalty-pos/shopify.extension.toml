@@ -1,0 +1,28 @@
+api_version = "2026-10"
+
+[[extensions]]
+type = "ui_extension"
+# 商家侧名字在 locales/en.default.json 的 name
+name = "t:name"
+uid = "1e1dd294-1019-d41a-b07f-d4b4aaff9d7d259dbd44"
+handle = "loyalty-pos"
+description = "Borderline loyalty points: balance, one-tap redeem to store credit, points earned on the post-purchase screen"
+
+# 首页瓷砖 + 兑换弹窗
+[[extensions.targeting]]
+module = "./src/Tile.jsx"
+target = "pos.home.tile.render"
+
+[[extensions.targeting]]
+module = "./src/Modal.jsx"
+target = "pos.home.modal.render"
+
+# 客户详情页：余额 / 会员档 / 最近流水
+[[extensions.targeting]]
+module = "./src/CustomerBlock.jsx"
+target = "pos.customer-details.block.render"
+
+# 收尾屏：这单赚了多少分（后端当场记账）
+[[extensions.targeting]]
+module = "./src/PostPurchaseBlock.jsx"
+target = "pos.purchase.post.block.render"

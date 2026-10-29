@@ -1,0 +1,41 @@
+{%- comment -%}
+  购物车 / 任意区块的积分条（主题 app block）：
+  - 已登录：显示余额 + "这单可赚 N 分" + 去 Rewards 页的链接（新版客户账户）
+  - 未登录：显示 "登录后可赚 N 分"
+  数据来自 /apps/loyalty/me（登录态由 Shopify App Proxy 带 logged_in_customer_id）和 /apps/loyalty/estimate。
+{%- endcomment -%}
+<div
+  class="bl-points-banner"
+  data-bl-points-banner
+  data-cart-cents="{{ cart.total_price }}"
+  data-logged-in="{% if customer %}1{% else %}0{% endif %}"
+  data-account-url="{{ routes.account_url }}"
+  data-login-url="{{ routes.account_login_url }}"
+  data-text-logged-in="{{ block.settings.text_logged_in | escape }}"
+  data-text-guest="{{ block.settings.text_guest | escape }}"
+  data-text-balance="{{ block.settings.text_balance | escape }}"
+  data-text-link="{{ block.settings.text_link | escape }}"
+  style="background: {{ block.settings.background }}; color: {{ block.settings.color }}; border-radius: 8px; padding: 10px 14px; margin: {{ block.settings.margin }}px 0; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 13px;"
+  hidden
+>
+  <span aria-hidden="true">★</span>
+  <span data-bl-banner-text></span>
+  <a data-bl-banner-link href="{{ routes.account_url }}" style="color: inherit; text-decoration: underline; margin-left: auto;"></a>
+</div>
+<script src="{{ 'loyalty.js' | asset_url }}" defer></script>
+
+{% schema %}
+{
+  "name": "Points banner",
+  "target": "section",
+  "settings": [
+    { "type": "text", "id": "text_balance", "label": "Balance text", "default": "You have {{balance}} points" },
+    { "type": "text", "id": "text_logged_in", "label": "Logged-in text", "default": "This order earns {{points}} points" },
+    { "type": "text", "id": "text_guest", "label": "Guest text", "default": "Log in to earn {{points}} points on this order" },
+    { "type": "text", "id": "text_link", "label": "Link text", "default": "View rewards" },
+    { "type": "color", "id": "background", "label": "Background", "default": "#F4F2ED" },
+    { "type": "color", "id": "color", "label": "Text color", "default": "#202321" },
+    { "type": "range", "id": "margin", "label": "Vertical margin (px)", "min": 0, "max": 24, "step": 2, "default": 12 }
+  ]
+}
+{% endschema %}
