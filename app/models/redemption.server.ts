@@ -154,6 +154,10 @@ export type IssueResult =
 /** 发码输入（discountCodeBasicCreate）：纯函数在 app/lib/redeemMath.ts，单测覆盖。 */
 export const discountInput = redemptionDiscountInput;
 
+export type RedemptionMethod = "store_credit" | "discount_code" | "cart_discount";
+
+const MINUTE_MS = 60 * 1000;
+
 export async function issueRedemption(
   params: {
     memberId: string;
@@ -162,6 +166,10 @@ export async function issueRedemption(
     issuedBy: string;
     idempotencyKey?: string | null;
     at?: Date;
+    /** 不传 = 规则里的 redeemMethod；POS 当场抵扣传 cart_discount */
+    method?: RedemptionMethod;
+    /** cart_discount：抵扣额不能超过购物车小计（前端传来，后端再守一次） */
+    maxAmountCents?: number | null;
   },
   deps: RedemptionDeps,
 ): Promise<IssueResult> {
@@ -173,6 +181,12 @@ export async function issueRedemption(
   }
   const { member, settings, windows } = await loadContext(params.memberId);
   const now = params.at ?? new Date();
+  const method: RedemptionMethod = params.method ?? settings.redeemMethod;
+  if (method === "cart_discount" && params.channel !== "pos") {
+    return { ok: false, error: "Cart discounts can only be applied at POS", quote: null };
+  }
+  // cart_discount 的金额口径与折扣码一致（税前抵扣）
+  const quoteRules = { ...ruleSubset(settings), redeemMethod: method === "store_credit" ? ("store_credit" as const) : ("discount_code" as const) };
 
   // 1) 锁会员行：按最新余额报价 → 建 Redemption + 扣分
   let created: { redemption: Redemption; quote: RedemptionQuote };
@@ -187,18 +201,22 @@ export async function issueRedemption(
           isMember: isMember(member, now, settings.memberTag),
           balance: fresh.balanceCached,
         },
-        ruleSubset(settings),
+        quoteRules,
         windows,
       );
       if (!quote.ok) throw new QuoteError(quote);
-      const storeCredit = settings.redeemMethod === "store_credit";
+      if (method === "cart_discount" && params.maxAmountCents != null && quote.amountCents > params.maxAmountCents) {
+        throw new QuoteError({ ...quote, ok: false, error: `Discount ${formatCents(quote.amountCents)} is more than the cart subtotal ${formatCents(params.maxAmountCents)}` });
+      }
+      const storeCredit = method === "store_credit";
       const redemption = await tx.redemption.create({
         data: {
           memberId: member.id,
           points: params.points,
           amountCents: quote.amountCents,
           currency: "CAD",
-          method: settings.redeemMethod,
+          method,
+          // cart_discount：这个字符串就是 POS 自定义折扣的标题，订单上会出现在 discount_applications[].title → 核销靠它
           discountCode: storeCredit ? null : buildRedemptionCode(settings.redeemCodePrefix, params.points, member.id),
           status: "issued",
           channel: params.channel,
@@ -207,7 +225,9 @@ export async function issueRedemption(
             ? settings.storeCreditExpiryMonths
               ? new Date(now.getTime() + settings.storeCreditExpiryMonths * MONTH_MS)
               : null
-            : new Date(now.getTime() + settings.redeemExpiryHours * HOUR_MS),
+            : method === "cart_discount"
+              ? new Date(now.getTime() + settings.cartDiscountExpiryMinutes * MINUTE_MS)
+              : new Date(now.getTime() + settings.redeemExpiryHours * HOUR_MS),
           idempotencyKey: params.idempotencyKey ?? null,
           meta: {
             multiplier: quote.multiplier,
@@ -227,7 +247,9 @@ export async function issueRedemption(
         referenceId: `redemption:${redemption.id}`,
         note: storeCredit
           ? `${formatCents(quote.amountCents)} store credit (${params.channel}${quote.multiplier !== 1 ? `, x${quote.multiplier}` : ""})`
-          : `${redemption.discountCode} (${formatCents(quote.amountCents)} off, ${params.channel}${quote.multiplier !== 1 ? `, x${quote.multiplier}` : ""})`,
+          : method === "cart_discount"
+            ? `${formatCents(quote.amountCents)} off the POS cart (${redemption.discountCode}${quote.multiplier !== 1 ? `, x${quote.multiplier}` : ""})`
+            : `${redemption.discountCode} (${formatCents(quote.amountCents)} off, ${params.channel}${quote.multiplier !== 1 ? `, x${quote.multiplier}` : ""})`,
         createdBy: params.issuedBy,
       });
       return { redemption, quote };
@@ -243,6 +265,9 @@ export async function issueRedemption(
   }
 
   const { redemption, quote } = created;
+
+  // 2c) POS 当场抵扣：不用调 Shopify，扩展拿到 code（=折扣标题）后自己 applyCartDiscount；成交 → orders/paid 核销，没成交 → 到期退分
+  if (redemption.method === "cart_discount") return { ok: true, applied: true, redemption, quote };
 
   // 2a) Store Credit：发到顾客账户；失败 → 退分 + cancelled
   if (redemption.method === "store_credit") {
@@ -444,6 +469,14 @@ export async function sweepRedemptions(deps: RedemptionDeps, now = new Date()) {
   const released: Array<{ shop: string; memberId: string }> = [];
   for (const r of due) {
     try {
+      if (r.method === "cart_discount") {
+        // 抵扣了购物车但一直没成交：到期退分（成交的话 orders/paid 早就把它标成 used 了）
+        if (await releaseRedemption(r.id, "expired", "system", "cart discount not used before the hold expired")) {
+          out.expired++;
+          released.push({ shop: r.member.shopDomain, memberId: r.memberId });
+        }
+        continue;
+      }
       if (r.method === "store_credit") {
         // 还停在 issued = 扣了分但 Store Credit 没确认到账（进程中途挂了）：退分
         if (await releaseRedemption(r.id, "cancelled", "system", "store credit was never confirmed")) {

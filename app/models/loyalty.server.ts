@@ -44,6 +44,9 @@ export type LoyaltySettings = {
   redeemExpiryHours: number;
   signupBonusPoints: number;
   migrationPointsMultiplier: number;
+  posAllowStoreCredit: boolean;
+  posAllowCartDiscount: boolean;
+  cartDiscountExpiryMinutes: number;
   updatedBy: string | null;
   updatedAt: string | null;
   persisted: boolean; // false = 库里还没有这一行，用的是下面的默认值
@@ -86,6 +89,9 @@ export const DEFAULT_SETTINGS: LoyaltySettings = {
   redeemExpiryHours: 24,
   signupBonusPoints: 0,
   migrationPointsMultiplier: 10,
+  posAllowStoreCredit: true,
+  posAllowCartDiscount: true,
+  cartDiscountExpiryMinutes: 120,
   updatedBy: null,
   updatedAt: null,
   persisted: false,
@@ -127,6 +133,9 @@ export async function getLoyaltySettings(shop: string): Promise<LoyaltySettings>
     redeemExpiryHours: row.redeemExpiryHours,
     signupBonusPoints: row.signupBonusPoints,
     migrationPointsMultiplier: Number(row.migrationPointsMultiplier.toString()),
+    posAllowStoreCredit: row.posAllowStoreCredit,
+    posAllowCartDiscount: row.posAllowCartDiscount,
+    cartDiscountExpiryMinutes: row.cartDiscountExpiryMinutes,
     updatedBy: row.updatedBy,
     updatedAt: row.updatedAt.toISOString(),
     persisted: true,
@@ -195,7 +204,11 @@ export function parseSettingsForm(form: FormData): { ok: true; value: SettingsIn
     redeemExpiryHours: num("redeemExpiryHours", { min: 1, max: 24 * 90, integer: true }),
     signupBonusPoints: num("signupBonusPoints", { min: 0, max: 100000, integer: true }),
     migrationPointsMultiplier: num("migrationPointsMultiplier", { min: 0, max: 100 }),
+    posAllowStoreCredit: truthy(form.get("posAllowStoreCredit")),
+    posAllowCartDiscount: truthy(form.get("posAllowCartDiscount")),
+    cartDiscountExpiryMinutes: num("cartDiscountExpiryMinutes", { min: 5, max: 24 * 60, integer: true }),
   };
+  if (!value.posAllowStoreCredit && !value.posAllowCartDiscount) errors.push("Enable at least one POS redeem option");
   if (value.expiryMode === "inactivity" && value.expiryMonths === null) errors.push("expiryMonths is required when expiryMode is inactivity");
   return errors.length ? { ok: false, errors } : { ok: true, value };
 }

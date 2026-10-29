@@ -82,7 +82,7 @@ Owner rules (2026-10-29): every customer with a Shopify profile earns **1 pt per
 | Redeeming | `app/models/redemption.server.ts` | Default `store_credit`: ledger `redeem` + `storeCreditAccountCredit` (Shopify emails the customer) → status `credited`; staff can reverse (`storeCreditAccountDebit`, points returned). Fallback `discount_code` issues a single-use customer-bound code. Redeem windows (e.g. double Wednesdays at POS) multiply the value. |
 | Expiry | `app/models/expiry.server.ts` (called from `loyalty.sweep`) | Off by default; `inactivity` mode zeroes balances after N months without activity. |
 | Staff UI | `/app/loyalty`, `/app/loyalty/:memberId`, `/app/loyalty/settings` | Search, ledger, adjust, issue store credit / code, reverse, memberships, rules + windows editor. |
-| POS | `extensions/loyalty-pos` (smart-grid tile + modal, customer-details block, post-purchase block) → `/api/pos/*` | Tile shows the cart customer's balance; one tap converts points to store credit (staff then takes payment with *Store credit*); the post-purchase block records the order immediately (no waiting for the webhook). Requires POS Pro (RH, Ottawa). |
+| POS | `extensions/loyalty-pos` (smart-grid tile + modal, customer-details block, post-purchase block) → `/api/pos/*` | Tile shows the cart customer's balance. Two one-tap options, each switchable in *Loyalty → Settings → POS redeem options*: **convert to store credit** (staff then takes payment with *Store credit*) or **take $X off this cart** (a fixed-amount cart discount titled with the redemption code, no typing; if no paid order uses it within the hold time the points come back via the sweep, and if POS cannot apply it the extension calls `/api/pos/release` immediately). The post-purchase block records the order at once (no waiting for the webhook). Requires POS Pro (RH, Ottawa). |
 | Customer accounts | `extensions/loyalty-account` (full page `customer-account.page.render` + order-index card) → `/api/account/*` | New customer accounts only (this store uses them). |
 | Storefront | `extensions/loyalty-theme` (app blocks *Points badge*, *Points banner*) → App Proxy `/apps/loyalty/{estimate,me,redeem}` | Place the blocks in the theme editor; no theme code changes. |
 | Shared service | `app/models/loyaltyPublic.server.ts` | `ensureMember` (auto-enrol from Shopify), `memberSummary`, `estimatePoints`, `redeemForMember`. |
@@ -107,7 +107,9 @@ npx tsx scripts/loyalty/verifyLocal.ts                 # throw-away embedded Pos
 1. On the freeze day re-run the export in the knowledge-base repo: `python scripts/loyalty_migration/export_appstle.py` → `backups/loyalty-migration/<ts>/migrate_rows.jsonl` + `customers_bulk.jsonl`.
 2. Dry run: `npx tsx scripts/loyalty/importAppstle.ts --rows <migrate_rows.jsonl> --members <customers_bulk.jsonl>` (prints counts only, never emails). Points are multiplied by `LoyaltyConfig.migrationPointsMultiplier` (default 10; override with `--multiplier`).
 3. Pilot: add `--apply --shop <shop>.myshopify.com --confirm-db <host:port/db> --only <customerId>` with `DATABASE_URL` set explicitly in the environment.
-4. Full: same without `--only`; re-running is a no-op. The anomalous 100M-point account is skipped unless `--include-anomalies`.
+4. Full: same without `--only`; re-running is a no-op. The anomalous 100M-point account (an internal staff test, owner 2026-10-29) is imported with a **zero** balance (member + snapshot kept, no ledger line); pass `--include-anomalies` only if that decision changes.
+
+Owner decisions 2026-10-29: the order that buys the membership earns at the paid rate; customers whose paid membership lapsed keep and may redeem their points but earn at the standard 1 pt per $1 (`redeemRequiresMember` off, `earnRequiresMember` off).
 
 Production migrations are applied by `npm run setup` (`prisma migrate deploy`) at container start; all loyalty migrations only add tables / columns.
 

@@ -16,7 +16,7 @@ import {
   type AdminGraphql,
   type LoyaltySettings,
 } from "./loyalty.server";
-import { getStoreCreditBalanceCents, issueRedemption, type IssueResult } from "./redemption.server";
+import { getStoreCreditBalanceCents, issueRedemption, type IssueResult, type RedemptionMethod } from "./redemption.server";
 
 export const customerGid = (id: string | number) => {
   const s = String(id).trim();
@@ -127,6 +127,9 @@ export type MemberSummary = {
     redeemMethod: LoyaltySettings["redeemMethod"];
   };
   options: Array<{ points: number; amountCents: number; amount: string; multiplier: number; windowLabel: string | null }>;
+  /** POS「抵扣当前购物车」档位（税前金额口径，与折扣码一致） */
+  cartOptions: Array<{ points: number; amountCents: number; amount: string; multiplier: number; windowLabel: string | null }>;
+  pos: { allowStoreCredit: boolean; allowCartDiscount: boolean; cartDiscountExpiryMinutes: number };
   recent: Array<{ at: string; type: string; delta: number; note: string | null; orderName: string | null }>;
 };
 
@@ -150,16 +153,19 @@ export async function memberSummary(
     redeemRounding: settings.redeemRounding,
     redeemRequiresMember: settings.redeemRequiresMember,
   };
-  const options = redeemPointOptions(member.balanceCached, rules, 12).map((points) => {
-    const q = quotePure({ points, channel, at, isMember: paid, balance: member.balanceCached }, rules, windows);
-    return {
-      points,
-      amountCents: q.amountCents,
-      amount: formatCents(q.amountCents),
-      multiplier: q.multiplier,
-      windowLabel: q.window?.label ?? null,
-    };
-  });
+  const quoteWith = (r: typeof rules) =>
+    redeemPointOptions(member.balanceCached, r, 12).map((points) => {
+      const q = quotePure({ points, channel, at, isMember: paid, balance: member.balanceCached }, r, windows);
+      return {
+        points,
+        amountCents: q.amountCents,
+        amount: formatCents(q.amountCents),
+        multiplier: q.multiplier,
+        windowLabel: q.window?.label ?? null,
+      };
+    });
+  const options = quoteWith(rules);
+  const cartOptions = channel === "pos" ? quoteWith({ ...rules, redeemMethod: "discount_code" }) : [];
   let storeCreditCents: number | null = null;
   if (admin && settings.redeemMethod === "store_credit") {
     try {
@@ -194,6 +200,12 @@ export async function memberSummary(
       redeemMethod: settings.redeemMethod,
     },
     options,
+    cartOptions,
+    pos: {
+      allowStoreCredit: settings.posAllowStoreCredit && settings.redeemMethod === "store_credit",
+      allowCartDiscount: settings.posAllowCartDiscount,
+      cartDiscountExpiryMinutes: settings.cartDiscountExpiryMinutes,
+    },
     recent: recent.map((r) => ({
       at: r.createdAt.toISOString(),
       type: r.type,
@@ -227,6 +239,8 @@ export async function redeemForMember(params: {
   issuedBy: string;
   idempotencyKey: string | null;
   admin: () => Promise<AdminGraphql>;
+  method?: RedemptionMethod;
+  maxAmountCents?: number | null;
 }): Promise<IssueResult> {
   const res = await issueRedemption(
     {
@@ -235,6 +249,8 @@ export async function redeemForMember(params: {
       channel: params.channel,
       issuedBy: params.issuedBy,
       idempotencyKey: params.idempotencyKey,
+      method: params.method,
+      maxAmountCents: params.maxAmountCents,
     },
     { getAdmin: params.admin },
   );

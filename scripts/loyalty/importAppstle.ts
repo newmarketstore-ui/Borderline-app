@@ -10,7 +10,7 @@
 // 安全：
 //   - 只认显式设置的 DATABASE_URL 环境变量（不读 .env，那是生产库），且 --confirm-db 必须等于它的 host:port/db
 //   - 永不打印邮箱 / 电话 / 姓名；输出只有计数、积分合计、客户数字 ID
-//   - flags 含 anomaly_huge_balance 的行默认跳过（需老板确认后加 --include-anomalies）
+//   - flags 含 anomaly_huge_balance 的行默认清零迁入（老板 2026-10-29：内部测试弄的）；--include-anomalies 才原样迁
 import { readFileSync } from "node:fs";
 import type { Prisma } from "@prisma/client";
 
@@ -182,6 +182,7 @@ async function main() {
   console.table({
     "migrate rows read": summary.rows,
     "skipped: anomaly_huge_balance": summary.skippedAnomaly,
+    "zeroed: anomaly_huge_balance (owner 10/29)": summary.zeroedAnomaly,
     "rows to import": summary.planned,
     "with member file record": summary.withMemberRecord,
     [`tagged ${memberTag}`]: summary.memberTagged,

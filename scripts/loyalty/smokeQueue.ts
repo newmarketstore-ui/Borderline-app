@@ -247,7 +247,7 @@ async function main() {
     await import("../../app/jobs/loyaltyRefund.server");
   const { handleSweep } = await import("../../app/jobs/sweep.server");
   const { appendLedger } = await import("../../app/models/ledger.server");
-  const { issueRedemption, reverseStoreCredit } =
+  const { issueRedemption, reverseStoreCredit, sweepRedemptions } =
     await import("../../app/models/redemption.server");
 
   const boss = await getBoss();
@@ -699,6 +699,79 @@ async function main() {
     );
     const scRev2 = sc.ok ? await reverseStoreCredit(sc.redemption.id, "smoke", "again", { getAdmin: async () => stubAdmin }) : { ok: true as const };
     check("store credit reverse replay: refused, no second debit", !scRev2.ok && calls.storeCreditDebit.length === 1);
+
+    // 9. POS 当场抵扣（cart_discount）：扣分 + 发标题，不调 Shopify；订单带这个标题 → used；没成交到期 → 退分
+    await appendLedger({
+      memberId: a!.id,
+      delta: 3000,
+      type: "adjust",
+      referenceType: "staff_adjust",
+      referenceId: `staff_adjust:smoke-cart-${RUN}`,
+      note: "smoke top-up for cart discount checks",
+      createdBy: "smoke",
+    });
+    a = await member(MEMBER_A);
+    const balanceBeforeCart = a!.balanceCached;
+    const discountCreatesBefore = calls.discountCreate.length;
+    const cd = await issueRedemption(
+      { memberId: a!.id, points: 1000, channel: "pos", issuedBy: "smoke", idempotencyKey: randomUUID(), method: "cart_discount", maxAmountCents: 5000 },
+      { getAdmin: async () => stubAdmin },
+    );
+    a = await member(MEMBER_A);
+    check(
+      "cart discount: 1000 pts -> $10.00 off, status issued, title set, no Shopify call, balance -1000",
+      cd.ok &&
+        cd.redemption.method === "cart_discount" &&
+        cd.redemption.status === "issued" &&
+        cd.redemption.amountCents === 1000 &&
+        Boolean(cd.redemption.discountCode) &&
+        cd.redemption.discountCodeId === null &&
+        a?.balanceCached === balanceBeforeCart - 1000 &&
+        calls.discountCreate.length === discountCreatesBefore,
+      cd.ok ? { status: cd.redemption.status, amount: cd.redemption.amountCents, balance: a?.balanceCached, expectedBalance: balanceBeforeCart - 1000, discountCreates: calls.discountCreate.length - discountCreatesBefore } : cd.error,
+    );
+    const cdTooBig = await issueRedemption(
+      { memberId: a!.id, points: 1000, channel: "pos", issuedBy: "smoke", idempotencyKey: randomUUID(), method: "cart_discount", maxAmountCents: 500 },
+      { getAdmin: async () => stubAdmin },
+    );
+    check("cart discount: refused when the discount exceeds the cart subtotal", !cdTooBig.ok && /more than the cart subtotal/.test(cdTooBig.error));
+    const cdWeb = await issueRedemption(
+      { memberId: a!.id, points: 1000, channel: "web", issuedBy: "smoke", idempotencyKey: randomUUID(), method: "cart_discount" },
+      { getAdmin: async () => stubAdmin },
+    );
+    check("cart discount: web channel refused", !cdWeb.ok);
+    // 订单成交：POS 自定义折扣出现在 discount_applications[].title
+    const ORDER_CD = {
+      ...orderPayload(7, MEMBER_A, [{ id: 61, product_id: 1, price: "50.00", discount: "10.00" }]),
+      discount_applications: [{ type: "manual", title: cd.ok ? cd.redemption.discountCode : "", value: "10.00", value_type: "fixed_amount" }],
+    };
+    const evCD = await deliver("orders/paid", QUEUES.earn, ORDER_CD);
+    const cdRow = cd.ok ? await prisma.redemption.findUnique({ where: { id: cd.redemption.id } }) : null;
+    check(
+      "cart discount used on a paid order: marked used (order id saved)",
+      evCD.status === "done" && cdRow?.status === "used" && cdRow.orderId === ORDER_CD.admin_graphql_api_id,
+      { note: evCD.error, status: cdRow?.status },
+    );
+    // 没成交：把到期时间拨到过去 → sweep 退分
+    const cd2 = await issueRedemption(
+      { memberId: a!.id, points: 1000, channel: "pos", issuedBy: "smoke", idempotencyKey: randomUUID(), method: "cart_discount", maxAmountCents: 5000 },
+      { getAdmin: async () => stubAdmin },
+    );
+    if (cd2.ok) await prisma.redemption.update({ where: { id: cd2.redemption.id }, data: { expiresAt: new Date(Date.now() - 60_000) } });
+    const sw2 = await sweepRedemptions({ getAdmin: async () => stubAdmin });
+    a = await member(MEMBER_A);
+    const cd2Row = cd2.ok ? await prisma.redemption.findUnique({ where: { id: cd2.redemption.id } }) : null;
+    const cd2Rel = cd2.ok ? await prisma.pointsLedger.findUnique({ where: { type_referenceId: { type: "redeem_release", referenceId: `redemption:${cd2.redemption.id}` } } }) : null;
+    // 期望余额 = 起点 − 已成交的 1000 + 那张订单本身赚的分（cd2 扣了又退，净 0）
+    const earnCD = await prisma.pointsLedger.findUnique({
+      where: { type_referenceId: { type: "earn", referenceId: ORDER_CD.admin_graphql_api_id } },
+    });
+    const expectedCartBalance = balanceBeforeCart - 1000 + (earnCD?.delta ?? 0);
+    check(
+      "cart discount not used before the hold expired: sweep expires it and returns 1000 pts",
+      cd2.ok && sw2.expired >= 1 && cd2Row?.status === "expired" && cd2Rel?.delta === 1000 && a?.balanceCached === expectedCartBalance,
+      { expired: sw2.expired, status: cd2Row?.status, balance: a?.balanceCached, expected: expectedCartBalance, orderEarned: earnCD?.delta },
+    );
 
     const totals = {
       members: await prisma.member.count({ where: { shopDomain: SHOP } }),

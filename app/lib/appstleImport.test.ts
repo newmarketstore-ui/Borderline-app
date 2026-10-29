@@ -39,13 +39,19 @@ describe("parseMigrateRows + planImportRow", () => {
     expect(p.ledger[1].availableAt.toISOString()).toBe("2026-11-15T05:00:00.000Z");
   });
   it("skips anomalies unless --include-anomalies", () => {
-    expect(planImportRow(rows[2], undefined, { includeAnomalies: false, pendingDays: 0, now: NOW }).skip).toBe("anomaly_huge_balance");
-    expect(planImportRow(rows[2], undefined, { includeAnomalies: true, pendingDays: 0, now: NOW }).skip).toBeNull();
+    const zeroed = planImportRow(rows[2], undefined, { includeAnomalies: false, pendingDays: 0, now: NOW });
+    expect(zeroed.skip).toBeNull();
+    expect(zeroed.zeroed).toBe("anomaly_huge_balance");
+    expect(zeroed.availablePoints).toBe(0);
+    expect(zeroed.ledger).toHaveLength(0);
+    const kept = planImportRow(rows[2], undefined, { includeAnomalies: true, pendingDays: 0, now: NOW });
+    expect(kept.zeroed).toBeNull();
+    expect(kept.availablePoints).toBe(99989500);
   });
   it("summarises without emails", () => {
     const plans = rows.map((r) => planImportRow(r, undefined, { includeAnomalies: false, pendingDays: 0, now: NOW }));
     const s = summarizePlans(plans, "gold-membership");
-    expect(s).toMatchObject({ rows: 4, planned: 3, skippedAnomaly: 1, ledgerRows: 4, availablePoints: 1234 - 279 + 12, pendingPoints: 329, negativeRows: 1 });
+    expect(s).toMatchObject({ rows: 4, planned: 4, skippedAnomaly: 0, zeroedAnomaly: 1, ledgerRows: 4, availablePoints: 1234 - 279 + 12, pendingPoints: 329, negativeRows: 1 });
     expect(JSON.stringify(s)).not.toContain("@");
   });
 });

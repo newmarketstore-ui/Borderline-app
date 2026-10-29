@@ -12,10 +12,7 @@
   "store_credit_line": "Store credit on account: {{amount}}",
   "redeem_heading": "Redeem",
   "need_more": "Needs at least {{min}} points to redeem.",
-  "redeem_store_credit": "Convert {{points}} pts to store credit",
-  "redeem_code": "Apply {{points}} pts as a discount",
   "hint_store_credit": "After converting, take payment with Store credit in the POS payment screen.",
-  "hint_code": "The discount is applied to this cart automatically.",
   "toast_store_credit": "{{amount}} store credit added",
   "toast_code": "Code {{code}} applied",
   "done_store_credit": "{{amount}} store credit is on the customer's account. Choose Store credit when taking payment.",
@@ -28,5 +25,14 @@
   "post_no_customer": "No customer on this order, so no points were earned.",
   "post_earned": "Earned {{points}} points on {{name}}",
   "post_balance": "New balance: {{points}} points",
-  "post_none": "No points on this order. {{reason}}"
+  "post_none": "No points on this order. {{reason}}",
+  "pick_points": "Choose how many points to use",
+  "btn_store_credit": "Convert {{points}} pts to {{amount}} store credit",
+  "btn_store_credit_na": "Store credit: pick a points amount",
+  "btn_cart": "Take {{amount}} off this cart ({{points}} pts)",
+  "btn_cart_na": "Cart discount: no option fits the cart subtotal (${{subtotal}})",
+  "hint_cart": "Cart discount: applied to this sale only; if the sale is not completed within {{minutes}} minutes the points come back.",
+  "toast_cart": "{{amount}} off applied to the cart",
+  "done_cart": "{{amount}} taken off this cart. Finish the sale as usual.",
+  "apply_failed": "POS could not apply the discount, points were returned. {{reason}}"
 }

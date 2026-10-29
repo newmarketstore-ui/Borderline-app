@@ -61,6 +61,9 @@ function toForm(s: Settings) {
     storeCreditExpiryMonths: s.storeCreditExpiryMonths === null ? "" : String(s.storeCreditExpiryMonths),
     signupBonusPoints: String(s.signupBonusPoints),
     migrationPointsMultiplier: String(s.migrationPointsMultiplier),
+    posAllowStoreCredit: s.posAllowStoreCredit,
+    posAllowCartDiscount: s.posAllowCartDiscount,
+    cartDiscountExpiryMinutes: String(s.cartDiscountExpiryMinutes),
     redeemAmountIsTaxInclusive: s.redeemAmountIsTaxInclusive,
     assumedTaxRate: String(s.assumedTaxRate),
     redeemRounding: s.redeemRounding as string,
@@ -166,6 +169,8 @@ export default function LoyaltySettingsPage() {
           "excludeDiscountedItems",
           "redeemAmountIsTaxInclusive",
           "redeemRequiresMember",
+          "posAllowStoreCredit",
+          "posAllowCartDiscount",
         ] as BoolKey[]
       ).map((k) => [k, form[k] ? "true" : "false"]),
     );
@@ -419,6 +424,32 @@ export default function LoyaltySettingsPage() {
             step={1}
             value={form.redeemExpiryHours}
             onInput={set("redeemExpiryHours")}
+          />
+        </s-stack>
+      </s-section>
+
+      <s-section heading="POS (in-store) redeem options">
+        <s-stack direction="block" gap="base">
+          <s-checkbox
+            label="Convert points to store credit"
+            details="One tap in the POS tile; staff then takes payment with Store credit. Credit stays on the customer's account."
+            checked={form.posAllowStoreCredit}
+            onChange={setBool("posAllowStoreCredit")}
+          />
+          <s-checkbox
+            label="Apply points to the current cart"
+            details="One tap applies a fixed-amount discount to this cart (no code). Points come back automatically if the sale is not completed."
+            checked={form.posAllowCartDiscount}
+            onChange={setBool("posAllowCartDiscount")}
+          />
+          <s-number-field
+            label="Cart discount hold (minutes)"
+            details="If no paid order uses the discount within this time, the points are returned"
+            name="cartDiscountExpiryMinutes"
+            min={5}
+            step={5}
+            value={form.cartDiscountExpiryMinutes}
+            onInput={set("cartDiscountExpiryMinutes")}
           />
         </s-stack>
       </s-section>

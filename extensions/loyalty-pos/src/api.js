@@ -6,36 +6,32 @@ async function authHeaders() {
   return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
 }
 
-export async function getMember(customerId) {
-  const res = await fetch(`${APP_URL}/api/pos/member?customerId=${encodeURIComponent(customerId)}&channel=pos`, {
-    headers: await authHeaders(),
-  });
+async function call(path, init) {
+  const res = await fetch(`${APP_URL}${path}`, { ...init, headers: await authHeaders() });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
   return data;
 }
 
-export async function redeem(customerId, points, idempotencyKey) {
-  const res = await fetch(`${APP_URL}/api/pos/redeem`, {
+export const getMember = (customerId) =>
+  call(`/api/pos/member?customerId=${encodeURIComponent(customerId)}&channel=pos`);
+
+/** mode: "store_credit" | "cart_discount"；maxAmountCents 只在 cart_discount 下传（购物车小计，分） */
+export const redeem = (customerId, points, idempotencyKey, mode, maxAmountCents) =>
+  call(`/api/pos/redeem`, {
     method: "POST",
-    headers: await authHeaders(),
-    body: JSON.stringify({ customerId, points, idempotencyKey }),
+    body: JSON.stringify({ customerId, points, idempotencyKey, mode, maxAmountCents }),
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok || !data.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  return data;
-}
 
-export async function orderEarned(orderId) {
-  const res = await fetch(`${APP_URL}/api/pos/order?orderId=${encodeURIComponent(orderId)}`, {
-    headers: await authHeaders(),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  return data;
-}
+/** 抵扣已扣分但 POS 套不上折扣 → 立刻退分 */
+export const release = (redemptionId) =>
+  call(`/api/pos/release`, { method: "POST", body: JSON.stringify({ redemptionId }) });
+
+export const orderEarned = (orderId) => call(`/api/pos/order?orderId=${encodeURIComponent(orderId)}`);
 
 export const newKey = () =>
   (globalThis.crypto && crypto.randomUUID ? crypto.randomUUID() : `k${Date.now()}${Math.random().toString(36).slice(2)}`).replace(/[^0-9a-zA-Z_-]/g, "");
 
 export const money = (cents) => `$${(cents / 100).toFixed(2)}`;
+/** POS 的金额字符串（"123.45"）→ 分 */
+export const toCents = (s) => Math.round(Number(String(s ?? "0").replace(/[^0-9.-]/g, "")) * 100) || 0;

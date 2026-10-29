@@ -1,9 +1,11 @@
-// 兑换弹窗：选档位 → 一键换成 Store Credit（收款时选 Store credit），或规则为折扣码时直接把码套进购物车。
+// 兑换弹窗（老板 10/29）：两种一键方式，后台 Loyalty settings 可分别开关
+//   1. 换成 Store Credit：积分 → 顾客账户余额，收款时选 Store credit
+//   2. 抵扣当前购物车：积分 → 这张购物车的固定金额折扣（无码），没成交会自动退分
 import "@shopify/ui-extensions/preact";
 import { render } from "preact";
 import { useEffect, useMemo, useState } from "preact/hooks";
 
-import { getMember, money, newKey, redeem } from "./api";
+import { getMember, newKey, redeem, release, toCents } from "./api";
 
 export default async () => {
   render(<Extension />, document.body);
@@ -11,20 +13,22 @@ export default async () => {
 
 function Extension() {
   const { i18n } = shopify;
-  const customerId = shopify.cart.current.value?.customer?.id ?? null;
+  const cart = shopify.cart.current.value;
+  const customerId = cart?.customer?.id ?? null;
+  const subtotalCents = toCents(cart?.subtotal);
   const [summary, setSummary] = useState(null);
   const [error, setError] = useState(null);
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(null); // "store_credit" | "cart_discount" | null
   const [done, setDone] = useState(null);
   const [selected, setSelected] = useState(null);
-  const key = useMemo(() => newKey(), []);
+  const [keys, setKeys] = useState(() => ({ store_credit: newKey(), cart_discount: newKey() }));
 
   const load = async () => {
     if (!customerId) return;
     try {
       const s = await getMember(customerId);
       setSummary(s);
-      setSelected((cur) => cur ?? s.options[0]?.points ?? null);
+      setSelected((cur) => cur ?? s.options[0]?.points ?? s.cartOptions[0]?.points ?? null);
       setError(null);
     } catch (e) {
       setError(e.message);
@@ -34,22 +38,46 @@ function Extension() {
     load();
   }, [customerId]);
 
-  const submit = async () => {
+  // 抵扣档位：金额不能超过购物车小计
+  const cartOptions = useMemo(
+    () => (summary ? summary.cartOptions.filter((o) => o.amountCents <= subtotalCents) : []),
+    [summary, subtotalCents],
+  );
+  const storeOption = summary?.options.find((o) => o.points === selected) ?? null;
+  const cartOption = cartOptions.find((o) => o.points === selected) ?? null;
+  const allOptions = summary ? (summary.pos.allowStoreCredit ? summary.options : cartOptions) : [];
+
+  const run = async (mode) => {
     if (!selected || busy) return;
-    setBusy(true);
+    setBusy(mode);
     setError(null);
     try {
-      const r = await redeem(customerId, selected, key);
-      if (r.method === "discount_code" && r.code) {
+      const r = await redeem(customerId, selected, keys[mode], mode, mode === "cart_discount" ? subtotalCents : undefined);
+      if (mode === "cart_discount") {
+        try {
+          // 固定金额自定义折扣；标题 = 后端给的码，订单上靠它核销
+          await shopify.cart.applyCartDiscount("FixedAmount", r.code, (r.amountCents / 100).toFixed(2));
+        } catch (applyErr) {
+          await release(r.redemptionId).catch(() => undefined);
+          throw new Error(i18n.translate("apply_failed", { reason: applyErr?.message || "" }));
+        }
+      } else if (r.method === "discount_code" && r.code) {
         await shopify.cart.applyCartCodeDiscount(r.code);
       }
-      setDone(r);
-      shopify.toast.show(r.method === "store_credit" ? i18n.translate("toast_store_credit", { amount: r.amount }) : i18n.translate("toast_code", { code: r.code }));
+      setDone({ ...r, mode });
+      setKeys((k) => ({ ...k, [mode]: newKey() }));
+      shopify.toast.show(
+        mode === "cart_discount"
+          ? i18n.translate("toast_cart", { amount: r.amount })
+          : r.method === "store_credit"
+            ? i18n.translate("toast_store_credit", { amount: r.amount })
+            : i18n.translate("toast_code", { code: r.code }),
+      );
       await load();
     } catch (e) {
       setError(e.message);
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   };
 
@@ -88,26 +116,40 @@ function Extension() {
                 </s-section>
 
                 <s-section heading={i18n.translate("redeem_heading")}>
-                  {summary.options.length === 0 ? (
+                  {allOptions.length === 0 ? (
                     <s-text>{i18n.translate("need_more", { min: summary.rules.minRedeemPoints })}</s-text>
                   ) : (
                     <s-stack direction="block" gap="small-200">
-                      {summary.options.map((o) => (
-                        <s-button
-                          key={o.points}
-                          variant={selected === o.points ? "primary" : "secondary"}
-                          onClick={() => setSelected(o.points)}
-                        >
-                          {`${o.points} pts → ${o.amount}${o.multiplier !== 1 ? ` (${o.windowLabel || "x" + o.multiplier})` : ""}`}
+                      <s-text tone="subdued">{i18n.translate("pick_points")}</s-text>
+                      <s-stack direction="inline" gap="small-200">
+                        {allOptions.map((o) => (
+                          <s-button key={o.points} variant={selected === o.points ? "primary" : "secondary"} onClick={() => setSelected(o.points)}>
+                            {`${o.points} pts`}
+                          </s-button>
+                        ))}
+                      </s-stack>
+
+                      {summary.pos.allowStoreCredit && (
+                        <s-button variant="primary" disabled={!storeOption || Boolean(busy)} loading={busy === "store_credit"} onClick={() => run("store_credit")}>
+                          {storeOption
+                            ? i18n.translate("btn_store_credit", { amount: storeOption.amount, points: storeOption.points })
+                            : i18n.translate("btn_store_credit_na")}
                         </s-button>
-                      ))}
-                      <s-button variant="primary" disabled={!selected || busy} loading={busy} onClick={submit}>
-                        {summary.rules.redeemMethod === "store_credit"
-                          ? i18n.translate("redeem_store_credit", { points: selected ?? 0 })
-                          : i18n.translate("redeem_code", { points: selected ?? 0 })}
-                      </s-button>
+                      )}
+                      {summary.pos.allowCartDiscount && (
+                        <s-button variant={summary.pos.allowStoreCredit ? "secondary" : "primary"} disabled={!cartOption || Boolean(busy)} loading={busy === "cart_discount"} onClick={() => run("cart_discount")}>
+                          {cartOption
+                            ? i18n.translate("btn_cart", { amount: cartOption.amount, points: cartOption.points })
+                            : i18n.translate("btn_cart_na", { subtotal: (subtotalCents / 100).toFixed(2) })}
+                        </s-button>
+                      )}
                       <s-text tone="subdued">
-                        {summary.rules.redeemMethod === "store_credit" ? i18n.translate("hint_store_credit") : i18n.translate("hint_code")}
+                        {[
+                          summary.pos.allowStoreCredit ? i18n.translate("hint_store_credit") : null,
+                          summary.pos.allowCartDiscount ? i18n.translate("hint_cart", { minutes: summary.pos.cartDiscountExpiryMinutes }) : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" ")}
                       </s-text>
                     </s-stack>
                   )}
@@ -115,9 +157,11 @@ function Extension() {
 
                 {done && (
                   <s-banner tone="success">
-                    {done.method === "store_credit"
-                      ? i18n.translate("done_store_credit", { amount: done.amount })
-                      : i18n.translate("done_code", { code: done.code, amount: done.amount })}
+                    {done.mode === "cart_discount"
+                      ? i18n.translate("done_cart", { amount: done.amount })
+                      : done.method === "store_credit"
+                        ? i18n.translate("done_store_credit", { amount: done.amount })
+                        : i18n.translate("done_code", { code: done.code, amount: done.amount })}
                   </s-banner>
                 )}
 
@@ -143,6 +187,3 @@ function Extension() {
     </s-page>
   );
 }
-
-// money 导出保留给其它模块
-export { money };

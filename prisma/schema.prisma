@@ -156,7 +156,7 @@ model Redemption {
   points         Int
   amountCents    Int
   currency       String    @default("CAD")
-  method         String    @default("discount_code") // discount_code | store_credit
+  method         String    @default("discount_code") // discount_code | store_credit | cart_discount（POS 当场抵扣，无码） | cart_discount（POS 当场抵扣，无码）
   discountCodeId String? // gid://shopify/DiscountCodeNode/…
   discountCode   String?
   storeCreditTransactionId String? // gid://shopify/StoreCreditAccountCreditTransaction/…
@@ -210,6 +210,10 @@ model LoyaltyConfig {
   redeemCodePrefix           String   @default("POINTS")
   redeemExpiryHours          Int      @default(24) // discount_code 方式的码有效期
   signupBonusPoints          Int      @default(0) // 首次建档送分（0 = 不送）
+  // POS 兑换方式开关（老板 10/29：一键换 Store Credit + 一键抵扣当前购物车，后台可配）
+  posAllowStoreCredit        Boolean  @default(true)
+  posAllowCartDiscount       Boolean  @default(true)
+  cartDiscountExpiryMinutes  Int      @default(120) // 抵扣了购物车但没成交：N 分钟后自动退分
   migrationPointsMultiplier  Decimal  @default(10) @db.Decimal(6, 3) // Appstle 10 分 = $1 → 我们 100 分 = $1，旧分 ×10 保值
   updatedBy                  String?
   updatedAt                  DateTime @updatedAt

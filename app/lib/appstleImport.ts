@@ -36,7 +36,8 @@ export type ImportPlan = {
   customerGid: string;
   numericId: string;
   flags: string[];
-  skip: null | "anomaly_huge_balance";
+  skip: null | "anomaly_huge_balance"; // 现在恒为 null（保留字段给 --include-anomalies 以外的未来用途）
+  zeroed: null | "anomaly_huge_balance"; // 老板 10/29：异常大额账户清零迁入
   availablePoints: number;
   pendingPoints: number;
   ledger: PlannedLedger[];
@@ -198,8 +199,10 @@ export function planImportRow(
   const gidv = customerGid(row.shopifyCustomerId);
   const id = numericCustomerId(gidv);
   const anomaly = row.flags.includes("anomaly_huge_balance");
-  const available = floorPoints(Number(row.availablePoints) * multiplier);
-  const pending = floorPoints(Number(row.pendingPoints) * multiplier);
+  // 老板 2026-10-29：那笔 1 亿分是内部员工测试弄的 → 清零迁入（建会员、留快照、不写分）；--include-anomalies 才原样迁
+  const zeroed = anomaly && !opts.includeAnomalies;
+  const available = zeroed ? 0 : floorPoints(Number(row.availablePoints) * multiplier);
+  const pending = zeroed ? 0 : floorPoints(Number(row.pendingPoints) * multiplier);
   const scaleNote = multiplier !== 1 ? ` (x${multiplier})` : "";
   const ledger: PlannedLedger[] = [];
   if (available !== 0)
@@ -222,7 +225,8 @@ export function planImportRow(
     customerGid: gidv,
     numericId: id,
     flags: row.flags,
-    skip: anomaly && !opts.includeAnomalies ? "anomaly_huge_balance" : null,
+    skip: null,
+    zeroed: zeroed ? "anomaly_huge_balance" : null,
     availablePoints: available,
     pendingPoints: pending,
     ledger,
@@ -243,6 +247,7 @@ export type ImportSummary = {
   rows: number;
   planned: number;
   skippedAnomaly: number;
+  zeroedAnomaly: number;
   withMemberRecord: number;
   memberTagged: number;
   membershipRows: number;
@@ -261,6 +266,7 @@ export function summarizePlans(plans: ImportPlan[], memberTag: string): ImportSu
     rows: plans.length,
     planned: 0,
     skippedAnomaly: 0,
+    zeroedAnomaly: 0,
     withMemberRecord: 0,
     memberTagged: 0,
     membershipRows: 0,
@@ -274,6 +280,7 @@ export function summarizePlans(plans: ImportPlan[], memberTag: string): ImportSu
   };
   for (const p of plans) {
     for (const f of p.flags) sum.flags[f] = (sum.flags[f] ?? 0) + 1;
+    if (p.zeroed) sum.zeroedAnomaly++;
     if (p.skip) {
       sum.skippedAnomaly++;
       continue;
