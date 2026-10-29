@@ -32,12 +32,16 @@ type Args = {
   apply: boolean;
   only: string | null;
   includeAnomalies: boolean;
+  multiplier: number | null; // 旧分倍数；null = 按库里 / 默认规则 migrationPointsMultiplier（10）
   allMembers: boolean;
   pendingDays: number | null;
   shop: string | null;
   confirmDb: string | null;
   memberTag: string;
 };
+
+// 与 app/models/loyalty.server.ts DEFAULT_SETTINGS.migrationPointsMultiplier 一致（脚本不引 shopify.server，所以单独写死）
+const FALLBACK_MULTIPLIER = 10;
 
 function parseArgs(argv: string[]): Args {
   const a: Args = {
@@ -46,6 +50,7 @@ function parseArgs(argv: string[]): Args {
     apply: false,
     only: null,
     includeAnomalies: false,
+    multiplier: null,
     allMembers: false,
     pendingDays: null,
     shop: null,
@@ -64,6 +69,7 @@ function parseArgs(argv: string[]): Args {
     else if (k === "--apply") a.apply = true;
     else if (k === "--only") a.only = v();
     else if (k === "--include-anomalies") a.includeAnomalies = true;
+    else if (k === "--multiplier") a.multiplier = Number(v());
     else if (k === "--all-members") a.allMembers = true;
     else if (k === "--pending-days") a.pendingDays = Number(v());
     else if (k === "--shop") a.shop = v();
@@ -142,11 +148,19 @@ async function main() {
         })
       : null;
   const pendingDays = args.pendingDays ?? config?.pendingDays ?? 0;
+  const multiplier =
+    args.multiplier ??
+    (config?.migrationPointsMultiplier !== undefined && config?.migrationPointsMultiplier !== null
+      ? Number(config.migrationPointsMultiplier.toString())
+      : FALLBACK_MULTIPLIER);
+  if (!Number.isFinite(multiplier) || multiplier <= 0) throw new Error(`bad --multiplier ${multiplier}`);
+  console.log(`[import] points multiplier x${multiplier} (Appstle 10 pts = $1 -> ours 100 pts = $1)`);
   const memberTag = config?.memberTag ?? args.memberTag;
 
   const plans = rows.map((r) =>
     planImportRow(r, members.get(r.shopifyCustomerId), {
       includeAnomalies: args.includeAnomalies,
+      multiplier,
       pendingDays,
       now,
     }),

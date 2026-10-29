@@ -191,13 +191,16 @@ export function membersFromBulkJsonl(text: string): Map<string, ExportMember> {
 export function planImportRow(
   row: MigrateRow,
   member: ExportMember | undefined,
-  opts: { includeAnomalies: boolean; pendingDays: number; now: Date },
+  opts: { includeAnomalies: boolean; pendingDays: number; now: Date; multiplier?: number },
 ): ImportPlan {
+  // Appstle 10 分 = $1，我们 100 分 = $1：旧分 × multiplier（默认 1；导入脚本按规则传 10）保值
+  const multiplier = opts.multiplier ?? 1;
   const gidv = customerGid(row.shopifyCustomerId);
   const id = numericCustomerId(gidv);
   const anomaly = row.flags.includes("anomaly_huge_balance");
-  const available = floorPoints(row.availablePoints);
-  const pending = floorPoints(row.pendingPoints);
+  const available = floorPoints(Number(row.availablePoints) * multiplier);
+  const pending = floorPoints(Number(row.pendingPoints) * multiplier);
+  const scaleNote = multiplier !== 1 ? ` (x${multiplier})` : "";
   const ledger: PlannedLedger[] = [];
   if (available !== 0)
     ledger.push({
@@ -205,7 +208,7 @@ export function planImportRow(
       referenceId: `appstle:${id}`,
       delta: available,
       availableAt: opts.now,
-      note: "Appstle balance migrated",
+      note: `Appstle balance migrated${scaleNote}`,
     });
   if (pending !== 0)
     ledger.push({
@@ -213,7 +216,7 @@ export function planImportRow(
       referenceId: `appstle:${id}:pending`,
       delta: pending,
       availableAt: opts.pendingDays > 0 ? new Date(opts.now.getTime() + opts.pendingDays * DAY_MS) : opts.now,
-      note: "Appstle pending points migrated",
+      note: `Appstle pending points migrated${scaleNote}`,
     });
   return {
     customerGid: gidv,

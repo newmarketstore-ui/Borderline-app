@@ -50,10 +50,17 @@ function toForm(s: Settings) {
     earnOnTax: s.earnOnTax,
     pendingDays: String(s.pendingDays),
     expiryMonths: s.expiryMonths === null ? "" : String(s.expiryMonths),
+    expiryMode: s.expiryMode as string,
     paidTierMultiplier: String(s.paidTierMultiplier),
     earnRequiresMember: s.earnRequiresMember,
     memberTag: s.memberTag,
+    membershipProductTag: s.membershipProductTag,
+    membershipMonths: String(s.membershipMonths),
     excludeDiscountedItems: s.excludeDiscountedItems,
+    redeemMethod: s.redeemMethod as string,
+    storeCreditExpiryMonths: s.storeCreditExpiryMonths === null ? "" : String(s.storeCreditExpiryMonths),
+    signupBonusPoints: String(s.signupBonusPoints),
+    migrationPointsMultiplier: String(s.migrationPointsMultiplier),
     redeemAmountIsTaxInclusive: s.redeemAmountIsTaxInclusive,
     assumedTaxRate: String(s.assumedTaxRate),
     redeemRounding: s.redeemRounding as string,
@@ -138,13 +145,15 @@ export default function LoyaltySettingsPage() {
 
   const example = (() => {
     const r = {
+      redeemMethod: form.redeemMethod as "store_credit" | "discount_code",
       redeemPointsPerDollar: Number(form.redeemPointsPerDollar) || 0,
       redeemAmountIsTaxInclusive: form.redeemAmountIsTaxInclusive,
       assumedTaxRate: Number(form.assumedTaxRate) || 0,
       redeemRounding: form.redeemRounding as RedeemRounding,
     };
-    const pts = Number(form.minRedeemPoints) || 500;
-    return `${pts} pts → ${formatCents(redeemAmountCents(pts, 1, r).amountCents)} off before tax; with x2 → ${formatCents(redeemAmountCents(pts, 2, r).amountCents)}`;
+    const pts = Number(form.minRedeemPoints) || 1000;
+    const what = form.redeemMethod === "store_credit" ? "store credit" : "off before tax";
+    return `${pts} pts → ${formatCents(redeemAmountCents(pts, 1, r).amountCents)} ${what}; with x2 → ${formatCents(redeemAmountCents(pts, 2, r).amountCents)}`;
   })();
 
   const save = () => {
@@ -193,10 +202,10 @@ export default function LoyaltySettingsPage() {
       </s-button>
 
       {!settings.persisted && (
-        <s-banner tone="info" heading="Showing the current Appstle rules as defaults">
+        <s-banner tone="info" heading="Showing the owner's 2026-10-29 rules as defaults">
           <s-paragraph>
-            Nothing has been saved for this store yet. The values below mirror the Appstle Loyalty configuration read on
-            2026-10-28 (members only, 1 pt per $1, 10 pts = $1 tax-inclusive, Wednesday double redeem at POS). Changes apply to
+            Nothing has been saved for this store yet. Defaults: every customer with a profile earns 1 pt per $1, paid
+            members earn 10 pts per $1, 1000 pts = $10 store credit, Appstle balances are imported at x10. Changes apply to
             orders paid after saving; past ledger entries are not recalculated.
           </s-paragraph>
         </s-banner>
@@ -251,12 +260,36 @@ export default function LoyaltySettingsPage() {
           />
           <s-number-field
             label="Paid member multiplier"
-            details="Points are multiplied by this for members with tier = paid (1 = no bonus)"
+            details="Paid members earn points x this (10 = 10 pts per $1). Paid = Appstle member tag/contract or a purchase of the membership product below."
             name="paidTierMultiplier"
             min={0}
             step={0.05}
             value={form.paidTierMultiplier}
             onInput={set("paidTierMultiplier")}
+          />
+          <s-text-field
+            label="Membership product tag"
+            details="Buying a product with this tag grants paid membership (the order itself earns at the paid rate)"
+            name="membershipProductTag"
+            value={form.membershipProductTag}
+            onInput={set("membershipProductTag")}
+          />
+          <s-number-field
+            label="Membership length (months)"
+            name="membershipMonths"
+            min={1}
+            step={1}
+            value={form.membershipMonths}
+            onInput={set("membershipMonths")}
+          />
+          <s-number-field
+            label="Welcome bonus points"
+            details="Granted once when a customer is first seen (0 = off)"
+            name="signupBonusPoints"
+            min={0}
+            step={1}
+            value={form.signupBonusPoints}
+            onInput={set("signupBonusPoints")}
           />
           <s-text-area
             label="Excluded product types"
@@ -285,20 +318,46 @@ export default function LoyaltySettingsPage() {
             value={form.pendingDays}
             onInput={set("pendingDays")}
           />
+          <s-select label="Points expiry" name="expiryMode" value={form.expiryMode} onChange={set("expiryMode")}>
+            <s-option value="off">Never expire</s-option>
+            <s-option value="inactivity">Expire after N months without any earn or redeem</s-option>
+          </s-select>
           <s-number-field
-            label="Points expire after (months)"
-            details="Leave empty for no expiry (expiry job not built yet)"
+            label="Expiry months (inactivity)"
+            details="Checked daily; the whole balance is zeroed with an 'expire' ledger line"
             name="expiryMonths"
             min={1}
             step={1}
             value={form.expiryMonths}
             onInput={set("expiryMonths")}
           />
+          <s-number-field
+            label="Appstle import multiplier"
+            details="Appstle used 10 pts = $1; ours is 100 pts = $1, so old balances import at x10 to keep their value"
+            name="migrationPointsMultiplier"
+            min={0}
+            step={0.5}
+            value={form.migrationPointsMultiplier}
+            onInput={set("migrationPointsMultiplier")}
+          />
         </s-stack>
       </s-section>
 
       <s-section heading="Redeeming">
         <s-stack direction="block" gap="base">
+          <s-select label="Redeem as" name="redeemMethod" value={form.redeemMethod} onChange={set("redeemMethod")}>
+            <s-option value="store_credit">Shopify store credit (works at online checkout and POS, no code)</s-option>
+            <s-option value="discount_code">Single-use discount code</s-option>
+          </s-select>
+          <s-number-field
+            label="Store credit expires after (months)"
+            details="Empty = never expires. Only used when redeeming as store credit."
+            name="storeCreditExpiryMonths"
+            min={1}
+            step={1}
+            value={form.storeCreditExpiryMonths}
+            onInput={set("storeCreditExpiryMonths")}
+          />
           <s-number-field
             label="Points per $1 of value"
             name="redeemPointsPerDollar"
@@ -308,8 +367,8 @@ export default function LoyaltySettingsPage() {
             onInput={set("redeemPointsPerDollar")}
           />
           <s-checkbox
-            label="The $ value is tax-inclusive"
-            details="Canada taxes after discounts, so the pre-tax discount = value / (1 + tax rate)"
+            label="The $ value is tax-inclusive (discount codes only)"
+            details="Canada taxes after discounts, so the pre-tax discount = value / (1 + tax rate). Store credit pays the taxed total directly."
             checked={form.redeemAmountIsTaxInclusive}
             onChange={setBool("redeemAmountIsTaxInclusive")}
           />
@@ -348,13 +407,13 @@ export default function LoyaltySettingsPage() {
             onInput={set("redeemStepPoints")}
           />
           <s-text-field
-            label="Discount code prefix"
+            label="Discount code prefix (discount codes only)"
             name="redeemCodePrefix"
             value={form.redeemCodePrefix}
             onInput={set("redeemCodePrefix")}
           />
           <s-number-field
-            label="Codes expire after (hours)"
+            label="Codes expire after (hours, discount codes only)"
             name="redeemExpiryHours"
             min={1}
             step={1}

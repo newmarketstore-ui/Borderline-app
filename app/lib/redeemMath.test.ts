@@ -172,3 +172,61 @@ describe("redeemPointOptions", () => {
     expect(redeemPointOptions(100000, { minRedeemPoints: 500, redeemStepPoints: 100 }, 5)).toHaveLength(5);
   });
 });
+
+// ── 老板 2026-10-29 规则：100 分 = $1 Store Credit，1000 分起、1000 一档，不折税 ────────────
+describe("store credit redemption (owner rule 10/29)", () => {
+  const rules = {
+    redeemMethod: "store_credit" as const,
+    redeemPointsPerDollar: 100,
+    minRedeemPoints: 1000,
+    redeemStepPoints: 1000,
+    redeemAmountIsTaxInclusive: true, // 即使开着，store_credit 也不折税
+    assumedTaxRate: 0.13,
+    redeemRounding: "nearest_cent" as const,
+    redeemRequiresMember: false,
+  };
+  const base = { channel: "web" as const, at: new Date("2026-11-02T18:00:00Z"), isMember: false, balance: 5000 };
+
+  it("1000 points = $10.00 store credit, no tax gross-down", () => {
+    const q = quoteRedemption({ ...base, points: 1000 }, rules, []);
+    expect(q.ok).toBe(true);
+    expect(q.amountCents).toBe(1000);
+    expect(q.faceValueCents).toBe(1000);
+    expect(q.taxRate).toBe(0);
+  });
+
+  it("3000 points = $30.00; 1500 is rejected by the 1000-point step; 500 is below the minimum", () => {
+    expect(quoteRedemption({ ...base, points: 3000 }, rules, []).amountCents).toBe(3000);
+    expect(quoteRedemption({ ...base, points: 1500 }, rules, []).error).toMatch(/steps of 1000/);
+    expect(quoteRedemption({ ...base, points: 500 }, rules, []).error).toMatch(/Minimum redemption is 1000/);
+  });
+
+  it("non-members may redeem when redeemRequiresMember is off; balance still enforced", () => {
+    expect(quoteRedemption({ ...base, points: 1000, isMember: false }, rules, []).ok).toBe(true);
+    expect(quoteRedemption({ ...base, points: 6000 }, rules, []).error).toMatch(/Not enough points/);
+  });
+
+  it("redeem windows still multiply store credit value", () => {
+    const wed = new Date("2026-11-04T18:00:00Z"); // 周三 13:00 多伦多
+    const q = quoteRedemption(
+      { ...base, points: 1000, channel: "pos", at: wed },
+      rules,
+      [
+        {
+          id: "w",
+          label: "Double Wednesday",
+          dayOfWeek: 3,
+          startHour: null,
+          endHour: null,
+          timezone: "America/Toronto",
+          multiplier: 2,
+          channels: ["pos"],
+          memberOnly: false,
+          active: true,
+        },
+      ],
+    );
+    expect(q.multiplier).toBe(2);
+    expect(q.amountCents).toBe(2000);
+  });
+});

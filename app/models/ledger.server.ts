@@ -11,7 +11,7 @@ export type Tx = Prisma.TransactionClient;
 export type LedgerEntryInput = {
   memberId: string;
   delta: number;
-  type: "earn" | "redeem" | "redeem_release" | "refund_reverse" | "adjust" | "expire" | "migrate";
+  type: "earn" | "redeem" | "redeem_release" | "refund_reverse" | "adjust" | "expire" | "migrate" | "signup_bonus";
   referenceType?: string | null;
   referenceId?: string | null;
   orderId?: string | null;

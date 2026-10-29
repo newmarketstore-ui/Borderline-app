@@ -20,12 +20,19 @@ import {
   upsertMemberFromCustomer,
   type AdminGraphql,
 } from "../models/loyalty.server";
-import { getMemberForGate, syncMembershipForCustomer, type MemberWithMemberships } from "../models/membership.server";
+import {
+  getMemberForGate,
+  grantPurchasedMembership,
+  syncMembershipForCustomer,
+  type MemberWithMemberships,
+} from "../models/membership.server";
 import { markRedemptionUsed } from "../models/redemption.server";
 import { enqueue, QUEUES } from "./queue.server";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 export const MEMBERSHIP_SYNC_DELAY_SECONDS = 120;
+/** 会员资格快照超过这么久就重新从 Shopify 拉一次（付费会员到期 / 续费都靠这个 + customers/update 兜底） */
+export const MEMBERSHIP_SYNC_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 export type EarnDeps = {
   getAdmin: (shop: string) => Promise<AdminGraphql>;
@@ -79,36 +86,64 @@ export async function handleEarn(event: WebhookEvent, deps: EarnDeps = defaultEa
     return lines;
   };
 
-  // 会员门槛
-  let membershipPurchase = false;
-  let gateMember: MemberWithMemberships | null = await getMemberForGate(order.customer.gid);
-  if (settings.earnRequiresMember) {
-    if (!gateMember || !gateMember.membershipSyncedAt) {
-      gateMember = await syncMembershipForCustomer(shop, await getAdmin(), order.customer.gid, {
-        memberTag: settings.memberTag,
-        createIfMember: true,
-        source: "order",
-      });
-    } else if (order.customer.tags) {
-      // payload 里的标签是下单时的最新值，先用它判断（customers/update 也会再同步）
-      gateMember = { ...gateMember, tags: order.customer.tags };
-    }
-    const gate = earnGate(settings, gateMember, orderDate);
-    if (!gate.eligible) {
-      // 这一单就是买会员的：标签还没打上也按会员算，2 分钟后再同步会员资格
-      if (!orderHasMembershipProduct(await withProductInfo())) {
-        return `skipped: not a paying member (${gate.reason})${usedNote}`;
-      }
-      membershipPurchase = true;
-      await deps.enqueueSyncMembership(shop, order.customer.gid, MEMBERSHIP_SYNC_DELAY_SECONDS);
-    }
+  // 会员身份：不管赚分要不要会员，都要知道是不是付费会员（付费会员按 paidTierMultiplier 倍数赚）
+  const knownBefore: MemberWithMemberships | null = await getMemberForGate(order.customer.gid);
+  let gateMember = knownBefore;
+  const syncedAt = gateMember?.membershipSyncedAt?.getTime() ?? 0;
+  if (!gateMember || Date.now() - syncedAt > MEMBERSHIP_SYNC_MAX_AGE_MS) {
+    const synced = await syncMembershipForCustomer(shop, await getAdmin(), order.customer.gid, {
+      memberTag: settings.memberTag,
+      createIfMember: true,
+      source: "order",
+    });
+    if (synced) gateMember = synced;
+  } else if (order.customer.tags) {
+    // payload 里的标签是下单时的最新值，先用它判断（customers/update 也会再同步）
+    gateMember = { ...gateMember, tags: order.customer.tags };
   }
 
-  // 有排除规则时才去补商品类型 / 标签
-  if (settings.excludedProductTypes.length > 0 || settings.excludedTags.length > 0) await withProductInfo();
-  const membershipNote = membershipPurchase ? "membership purchase: earned as member, membership sync queued" : "";
+  // 这一单买了会员商品（标签 Membership）→ 自己记一份付费会员，本单就按付费会员算
+  // 只有行标题像会员商品、或配置了排除规则时才去 Admin API 补商品标签（省一次调用）
+  const titleHint = new RegExp(settings.membershipProductTag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+  const maybeMembership = lines.some((l) => (l.tags ?? []).length > 0 || titleHint.test(l.title ?? ""));
+  if (maybeMembership || settings.excludedProductTypes.length > 0 || settings.excludedTags.length > 0) await withProductInfo();
+  const membershipPurchase = orderHasMembershipProduct(lines, settings.membershipProductTag);
 
-  const member = await upsertMemberFromCustomer(shop, order.customer, "order");
+  if (settings.earnRequiresMember && !membershipPurchase) {
+    const gate = earnGate(settings, gateMember, orderDate);
+    if (!gate.eligible) return `skipped: not a paying member (${gate.reason})${usedNote}`;
+  }
+
+  let member = await upsertMemberFromCustomer(shop, order.customer, "order");
+  const notes: string[] = [];
+
+  // 首次建档送分（规则 0 = 不送）；幂等键 signup:<客户 GID>
+  if (!knownBefore && settings.signupBonusPoints > 0) {
+    const bonus = await appendLedger({
+      memberId: member.id,
+      delta: settings.signupBonusPoints,
+      type: "signup_bonus",
+      referenceType: "customer",
+      referenceId: `signup:${order.customer.gid}`,
+      note: "Welcome bonus",
+      createdBy: "system",
+    });
+    if (bonus.applied) notes.push(`signup bonus ${settings.signupBonusPoints}`);
+  }
+
+  if (membershipPurchase) {
+    member = await grantPurchasedMembership({
+      memberId: member.id,
+      orderGid: order.orderGid,
+      orderName: order.orderName,
+      months: settings.membershipMonths,
+      at: orderDate,
+    });
+    // Appstle Memberships 还在用时它也会打标签 / 建合约，2 分钟后再同步一次拿它的到期日
+    await deps.enqueueSyncMembership(shop, order.customer.gid, MEMBERSHIP_SYNC_DELAY_SECONDS);
+    notes.push("membership purchase: paid tier granted");
+  }
+  const membershipNote = notes.join("; ");
   const multiplier = tierMultiplier(member, settings, orderDate);
 
   const result = computeEarnPoints(
@@ -154,6 +189,8 @@ export async function handleEarn(event: WebhookEvent, deps: EarnDeps = defaultEa
         excludeDiscountedItems: settings.excludeDiscountedItems,
         earnRequiresMember: settings.earnRequiresMember,
         memberTag: settings.memberTag,
+        tier: member.tier,
+        paidUntil: member.paidUntil?.toISOString() ?? null,
       },
       ...(membershipPurchase ? { membershipPurchase: true } : {}),
     },
@@ -161,6 +198,6 @@ export async function handleEarn(event: WebhookEvent, deps: EarnDeps = defaultEa
 
   // metafield 同步单独排队（有自己的重试），不让它拖垮记账
   await deps.enqueueSyncBalance(shop, updated.id);
-  const notes = [membershipNote, usedNote.slice(2)].filter(Boolean).join("; ");
-  return applied ? notes || undefined : `already applied (idempotent)${notes ? `; ${notes}` : ""}`;
+  const finalNotes = [membershipNote, usedNote.slice(2)].filter(Boolean).join("; ");
+  return applied ? finalNotes || undefined : `already applied (idempotent)${finalNotes ? `; ${finalNotes}` : ""}`;
 }

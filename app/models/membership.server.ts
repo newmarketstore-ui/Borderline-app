@@ -170,6 +170,44 @@ export async function syncMembershipForCustomer(
   return applyMembership(shop, data, opts);
 }
 
+const MONTH_MS = 30.4375 * 24 * 60 * 60 * 1000;
+
+/**
+ * 买了会员商品（标签 Membership）→ 我们自己记一份付费会员：Membership(source shopify_order, externalId 订单 GID)，
+ * tier = paid，paidUntil = max(现有到期日, 现在) + membershipMonths。幂等：同一订单只记一份。
+ */
+export async function grantPurchasedMembership(params: {
+  memberId: string;
+  orderGid: string;
+  orderName?: string | null;
+  months: number;
+  at: Date;
+}): Promise<MemberWithMemberships> {
+  return prisma.$transaction(async (tx) => {
+    const member = await tx.member.findUniqueOrThrow({ where: { id: params.memberId } });
+    const existing = await tx.membership.findUnique({
+      where: { source_externalId: { source: "shopify_order", externalId: params.orderGid } },
+    });
+    if (!existing) {
+      const base = member.paidUntil && member.paidUntil > params.at ? member.paidUntil : params.at;
+      const endsAt = new Date(base.getTime() + params.months * MONTH_MS);
+      await tx.membership.create({
+        data: {
+          memberId: member.id,
+          source: "shopify_order",
+          externalId: params.orderGid,
+          planName: `Store Membership (${params.orderName ?? params.orderGid})`,
+          status: "active",
+          startedAt: params.at,
+          endsAt,
+        },
+      });
+      await tx.member.update({ where: { id: member.id }, data: { tier: "paid", paidUntil: endsAt } });
+    }
+    return tx.member.findUniqueOrThrow({ where: { id: member.id }, include: { memberships: true } });
+  });
+}
+
 export async function getMemberForGate(customerGid: string): Promise<MemberWithMemberships | null> {
   return prisma.member.findUnique({ where: { shopifyCustomerId: customerGid }, include: { memberships: true } });
 }

@@ -156,10 +156,14 @@ model Redemption {
   points         Int
   amountCents    Int
   currency       String    @default("CAD")
+  method         String    @default("discount_code") // discount_code | store_credit
   discountCodeId String? // gid://shopify/DiscountCodeNode/…
   discountCode   String?
+  storeCreditTransactionId String? // gid://shopify/StoreCreditAccountCreditTransaction/…
+  storeCreditAccountId     String?
+  storeCreditReversalId    String? // 店员撤销时的 debit 交易
   orderId        String?
-  status         String    @default("issued") // issued | used | cancelled | expired
+  status         String    @default("issued") // issued | used | cancelled | expired | credited（store_credit 已到账）
   channel        String // web | pos
   issuedBy       String // system | 员工邮箱
   expiresAt      DateTime?
@@ -179,27 +183,34 @@ model Redemption {
 model LoyaltyConfig {
   id                         String   @id @default(cuid())
   shopDomain                 String   @unique
+  // ── 老板 2026-10-29 定规：普通会员（任何留资下单的客人）$1 = 1 分；付费会员 $1 = 10 分；1000 分 = $10 Store Credit ──
   pointsPerDollar            Decimal  @default(1) @db.Decimal(10, 4)
-  redeemPointsPerDollar      Int      @default(10) // Appstle：10 分 = $1（含税口径，见 redeemAmountIsTaxInclusive）
-  minRedeemPoints            Int      @default(500)
-  redeemStepPoints           Int      @default(100)
+  redeemPointsPerDollar      Int      @default(100) // 100 分 = $1（1000 分 = $10）
+  minRedeemPoints            Int      @default(1000)
+  redeemStepPoints           Int      @default(1000)
   excludedProductTypes       String[] @default([])
   excludedTags               String[] @default(["Gift Card", "Service"])
   earnOnShipping             Boolean  @default(false)
   earnOnTax                  Boolean  @default(false)
   pendingDays                Int      @default(0)
-  expiryMonths               Int?
-  paidTierMultiplier         Decimal  @default(1) @db.Decimal(6, 3)
-  // ── 2026-10-28 按 Appstle 实际规则补齐（reports/积分迁移_Appstle导出_2026-10-28.md §七）──
-  earnRequiresMember         Boolean  @default(true) // 只有付费会员赚分
-  memberTag                  String   @default("gold-membership")
-  excludeDiscountedItems     Boolean  @default(true) // 有任何折扣分摊的行不计分
-  redeemAmountIsTaxInclusive Boolean  @default(true) // 10 分 = $1 含税 → 税前折扣 = 分 / 10 / (1 + 税率)
+  expiryMonths               Int? // expiryMode = inactivity 时：N 个月没有任何赚分 / 兑换 → 余额清零
+  expiryMode                 String   @default("off") // off | inactivity
+  paidTierMultiplier         Decimal  @default(10) @db.Decimal(6, 3) // 付费会员倍数（10 分/$）
+  earnRequiresMember         Boolean  @default(false) // 老板 10/29：任何留资客人都赚分
+  memberTag                  String   @default("gold-membership") // 付费会员标签（Appstle Memberships 打的）
+  membershipProductTag       String   @default("Membership") // 买带此标签的商品 = 开通付费会员
+  membershipMonths           Int      @default(12) // 自己记的付费会员时长
+  excludeDiscountedItems     Boolean  @default(false)
+  redeemMethod               String   @default("store_credit") // store_credit | discount_code
+  storeCreditExpiryMonths    Int? // null = Store Credit 不过期
+  redeemAmountIsTaxInclusive Boolean  @default(false) // 只对 discount_code 有意义（Store Credit 直接抵总价）
   assumedTaxRate             Decimal  @default(0.13) @db.Decimal(6, 4)
-  redeemRounding             String   @default("nearest_cent") // nearest_cent | floor_cent | up_10_cents（Appstle 手填 44.30 ≈ up_10_cents）
-  redeemRequiresMember       Boolean  @default(true) // Appstle 兑换规则几乎都限 gold-membership
+  redeemRounding             String   @default("nearest_cent") // nearest_cent | floor_cent | up_10_cents
+  redeemRequiresMember       Boolean  @default(false)
   redeemCodePrefix           String   @default("POINTS")
-  redeemExpiryHours          Int      @default(24)
+  redeemExpiryHours          Int      @default(24) // discount_code 方式的码有效期
+  signupBonusPoints          Int      @default(0) // 首次建档送分（0 = 不送）
+  migrationPointsMultiplier  Decimal  @default(10) @db.Decimal(6, 3) // Appstle 10 分 = $1 → 我们 100 分 = $1，旧分 ×10 保值
   updatedBy                  String?
   updatedAt                  DateTime @updatedAt
 }

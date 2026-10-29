@@ -7,6 +7,7 @@ const SCALE = 10_000n;
 export type EarnLine = {
   lineId: string; // 订单行 GID（gid://shopify/LineItem/…）
   productId?: string | null;
+  title?: string | null; // 行标题（只用来判断要不要去补商品标签，不参与计分）
   productType?: string | null;
   tags?: string[];
   giftCard: boolean;

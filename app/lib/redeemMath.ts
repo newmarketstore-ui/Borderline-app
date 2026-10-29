@@ -26,6 +26,7 @@ export type RedeemWindowRule = {
 };
 
 export type RedeemQuoteRules = {
+  redeemMethod?: "store_credit" | "discount_code"; // 省略 = discount_code；store_credit 直接抵含税总价，不做税前折算
   redeemPointsPerDollar: number;
   minRedeemPoints: number;
   redeemStepPoints: number;
@@ -104,14 +105,15 @@ export function activeWindow(
 export function redeemAmountCents(
   points: number,
   multiplier: number,
-  rules: Pick<RedeemQuoteRules, "redeemPointsPerDollar" | "redeemAmountIsTaxInclusive" | "assumedTaxRate" | "redeemRounding">,
+  rules: Pick<RedeemQuoteRules, "redeemPointsPerDollar" | "redeemAmountIsTaxInclusive" | "assumedTaxRate" | "redeemRounding" | "redeemMethod">,
 ): { faceValueCents: number; amountCents: number } {
   if (!(points > 0) || !(rules.redeemPointsPerDollar > 0)) return { faceValueCents: 0, amountCents: 0 };
   // 含税价值（分）= points × mult × 100 / ppd
   const faceNum = BigInt(Math.trunc(points)) * scaled(multiplier) * 100n;
   const faceDen = BigInt(Math.trunc(rules.redeemPointsPerDollar)) * SCALE;
   const faceValueCents = Number((faceNum * 2n + faceDen) / (faceDen * 2n));
-  const taxS = rules.redeemAmountIsTaxInclusive ? scaled(rules.assumedTaxRate) : 0n;
+  const taxInclusive = rules.redeemMethod === "store_credit" ? false : rules.redeemAmountIsTaxInclusive;
+  const taxS = taxInclusive ? scaled(rules.assumedTaxRate) : 0n;
   const num = faceNum * SCALE;
   const den = faceDen * (SCALE + taxS);
   let amount: bigint;
@@ -142,7 +144,7 @@ export function quoteRedemption(input: QuoteInput, rules: RedeemQuoteRules, wind
     faceValueCents,
     amountCents,
     minSubtotalCents: win?.minSpendEqualsDiscount && amountCents > 0 ? amountCents : null,
-    taxRate: rules.redeemAmountIsTaxInclusive ? rules.assumedTaxRate : 0,
+    taxRate: rules.redeemMethod !== "store_credit" && rules.redeemAmountIsTaxInclusive ? rules.assumedTaxRate : 0,
     rounding: rules.redeemRounding,
   };
   const fail = (error: string): RedemptionQuote => ({ ...base, ok: false, error });

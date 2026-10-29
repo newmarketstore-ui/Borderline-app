@@ -69,6 +69,7 @@ export function normalizeOrderWebhook(p: Json): NormalizedOrder | null {
   const lines: EarnLine[] = arr(p.line_items).map((li) => ({
     lineId: str(li.admin_graphql_api_id) ?? gid("LineItem", li.id),
     productId: li.product_id ? gid("Product", li.product_id) : null,
+    title: str(li.title) ?? str(li.name) ?? null,
     productType: li.product_type ?? undefined, // REST 订单行一般不带，计分前按需用 Admin API 补
     tags: undefined,
     giftCard: Boolean(li.gift_card),
@@ -106,6 +107,7 @@ export function normalizeOrderGraphql(o: Json): NormalizedOrder {
   const lines: EarnLine[] = arr(o.lineItems?.nodes).map((li) => ({
     lineId: String(li.id),
     productId: li.product?.id ?? null,
+    title: li.title ? String(li.title) : null,
     productType: li.product?.productType ?? null,
     tags: arr(li.product?.tags).map(String),
     giftCard: Boolean(li.isGiftCard),

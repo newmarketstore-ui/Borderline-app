@@ -27,45 +27,65 @@ export type LoyaltySettings = {
   earnOnTax: boolean;
   pendingDays: number;
   expiryMonths: number | null;
+  expiryMode: ExpiryMode;
   paidTierMultiplier: number;
   earnRequiresMember: boolean;
   memberTag: string;
+  membershipProductTag: string;
+  membershipMonths: number;
   excludeDiscountedItems: boolean;
+  redeemMethod: RedeemMethod;
+  storeCreditExpiryMonths: number | null;
   redeemAmountIsTaxInclusive: boolean;
   assumedTaxRate: number;
   redeemRounding: RedeemRounding;
   redeemRequiresMember: boolean;
   redeemCodePrefix: string;
   redeemExpiryHours: number;
+  signupBonusPoints: number;
+  migrationPointsMultiplier: number;
   updatedBy: string | null;
   updatedAt: string | null;
   persisted: boolean; // false = 库里还没有这一行，用的是下面的默认值
 };
 
-// 默认值 = Appstle 现行规则（reports/积分迁移_Appstle导出_2026-10-28.md §七，2026-10-28 读取）：
-// 只限 gold-membership 会员赚分；每 $1 小计 1 分，不含税 / 运费；打折行、Gift Card / Service 标签商品不给分；向下取整；
-// 兑换 10 分 = $1（含税价值，税前折扣 = 分 / 10 / 1.13）；最低 500、步长 100。
+export type RedeemMethod = "store_credit" | "discount_code";
+export const REDEEM_METHODS: RedeemMethod[] = ["store_credit", "discount_code"];
+export type ExpiryMode = "off" | "inactivity";
+export const EXPIRY_MODES: ExpiryMode[] = ["off", "inactivity"];
+
+// 默认值 = 老板 2026-10-29 定规：
+// 普通会员（任何留资下单的客人）$1 小计 = 1 分；付费会员 $1 = 10 分（paidTierMultiplier）；不含税 / 运费；Gift Card / Service 不给分；向下取整；
+// 兑换 100 分 = $1，1000 分起、1000 分一档，发到顾客的 Shopify Store Credit（线上结账和 POS 原生可用）。
+// Appstle 旧分 10 分 = $1，迁移时 ×10 保值（migrationPointsMultiplier）。
 export const DEFAULT_SETTINGS: LoyaltySettings = {
   pointsPerDollar: 1,
-  redeemPointsPerDollar: 10,
-  minRedeemPoints: 500,
-  redeemStepPoints: 100,
+  redeemPointsPerDollar: 100,
+  minRedeemPoints: 1000,
+  redeemStepPoints: 1000,
   excludedProductTypes: [],
   excludedTags: ["Gift Card", "Service"],
   earnOnShipping: false,
   earnOnTax: false,
   pendingDays: 0,
   expiryMonths: null,
-  paidTierMultiplier: 1,
-  earnRequiresMember: true,
+  expiryMode: "off",
+  paidTierMultiplier: 10,
+  earnRequiresMember: false,
   memberTag: "gold-membership",
-  excludeDiscountedItems: true,
-  redeemAmountIsTaxInclusive: true,
+  membershipProductTag: "Membership",
+  membershipMonths: 12,
+  excludeDiscountedItems: false,
+  redeemMethod: "store_credit",
+  storeCreditExpiryMonths: null,
+  redeemAmountIsTaxInclusive: false,
   assumedTaxRate: 0.13,
   redeemRounding: "nearest_cent",
-  redeemRequiresMember: true,
+  redeemRequiresMember: false,
   redeemCodePrefix: "POINTS",
   redeemExpiryHours: 24,
+  signupBonusPoints: 0,
+  migrationPointsMultiplier: 10,
   updatedBy: null,
   updatedAt: null,
   persisted: false,
@@ -73,6 +93,8 @@ export const DEFAULT_SETTINGS: LoyaltySettings = {
 
 const asRounding = (v: string): RedeemRounding =>
   (REDEEM_ROUNDINGS as string[]).includes(v) ? (v as RedeemRounding) : "nearest_cent";
+const asMethod = (v: string): RedeemMethod => ((REDEEM_METHODS as string[]).includes(v) ? (v as RedeemMethod) : "store_credit");
+const asExpiryMode = (v: string): ExpiryMode => ((EXPIRY_MODES as string[]).includes(v) ? (v as ExpiryMode) : "off");
 
 export async function getLoyaltySettings(shop: string): Promise<LoyaltySettings> {
   const row = await prisma.loyaltyConfig.findUnique({ where: { shopDomain: shop } });
@@ -88,16 +110,23 @@ export async function getLoyaltySettings(shop: string): Promise<LoyaltySettings>
     earnOnTax: row.earnOnTax,
     pendingDays: row.pendingDays,
     expiryMonths: row.expiryMonths,
+    expiryMode: asExpiryMode(row.expiryMode),
     paidTierMultiplier: Number(row.paidTierMultiplier.toString()),
     earnRequiresMember: row.earnRequiresMember,
     memberTag: row.memberTag,
+    membershipProductTag: row.membershipProductTag,
+    membershipMonths: row.membershipMonths,
     excludeDiscountedItems: row.excludeDiscountedItems,
+    redeemMethod: asMethod(row.redeemMethod),
+    storeCreditExpiryMonths: row.storeCreditExpiryMonths,
     redeemAmountIsTaxInclusive: row.redeemAmountIsTaxInclusive,
     assumedTaxRate: Number(row.assumedTaxRate.toString()),
     redeemRounding: asRounding(row.redeemRounding),
     redeemRequiresMember: row.redeemRequiresMember,
     redeemCodePrefix: row.redeemCodePrefix,
     redeemExpiryHours: row.redeemExpiryHours,
+    signupBonusPoints: row.signupBonusPoints,
+    migrationPointsMultiplier: Number(row.migrationPointsMultiplier.toString()),
     updatedBy: row.updatedBy,
     updatedAt: row.updatedAt.toISOString(),
     persisted: true,
@@ -130,6 +159,13 @@ export function parseSettingsForm(form: FormData): { ok: true; value: SettingsIn
   if (!/^[A-Z0-9]{2,12}$/.test(prefix)) errors.push("redeemCodePrefix must be 2-12 letters or digits");
   const rounding = String(form.get("redeemRounding") ?? "");
   if (!(REDEEM_ROUNDINGS as string[]).includes(rounding)) errors.push(`redeemRounding must be one of ${REDEEM_ROUNDINGS.join(", ")}`);
+  const method = String(form.get("redeemMethod") ?? "");
+  if (!(REDEEM_METHODS as string[]).includes(method)) errors.push(`redeemMethod must be one of ${REDEEM_METHODS.join(", ")}`);
+  const expiryMode = String(form.get("expiryMode") ?? "off");
+  if (!(EXPIRY_MODES as string[]).includes(expiryMode)) errors.push(`expiryMode must be one of ${EXPIRY_MODES.join(", ")}`);
+  const storeCreditExpiryRaw = String(form.get("storeCreditExpiryMonths") ?? "").trim();
+  const membershipProductTag = String(form.get("membershipProductTag") ?? "").trim();
+  if (!membershipProductTag) errors.push("membershipProductTag is required");
   const value: SettingsInput = {
     pointsPerDollar: num("pointsPerDollar", { min: 0, max: 100 }),
     redeemPointsPerDollar: num("redeemPointsPerDollar", { min: 1, max: 100000, integer: true }),
@@ -141,17 +177,26 @@ export function parseSettingsForm(form: FormData): { ok: true; value: SettingsIn
     earnOnTax: truthy(form.get("earnOnTax")),
     pendingDays: num("pendingDays", { min: 0, max: 365, integer: true }),
     expiryMonths: expiryRaw === "" ? null : num("expiryMonths", { min: 1, max: 120, integer: true }),
-    paidTierMultiplier: num("paidTierMultiplier", { min: 0, max: 10 }),
+    expiryMode: asExpiryMode(expiryMode),
+    paidTierMultiplier: num("paidTierMultiplier", { min: 0, max: 100 }),
     earnRequiresMember: truthy(form.get("earnRequiresMember")),
     memberTag,
+    membershipProductTag,
+    membershipMonths: num("membershipMonths", { min: 1, max: 120, integer: true }),
     excludeDiscountedItems: truthy(form.get("excludeDiscountedItems")),
+    redeemMethod: asMethod(method),
+    storeCreditExpiryMonths:
+      storeCreditExpiryRaw === "" ? null : num("storeCreditExpiryMonths", { min: 1, max: 120, integer: true }),
     redeemAmountIsTaxInclusive: truthy(form.get("redeemAmountIsTaxInclusive")),
     assumedTaxRate: num("assumedTaxRate", { min: 0, max: 0.5 }),
     redeemRounding: asRounding(rounding),
     redeemRequiresMember: truthy(form.get("redeemRequiresMember")),
     redeemCodePrefix: prefix,
     redeemExpiryHours: num("redeemExpiryHours", { min: 1, max: 24 * 90, integer: true }),
+    signupBonusPoints: num("signupBonusPoints", { min: 0, max: 100000, integer: true }),
+    migrationPointsMultiplier: num("migrationPointsMultiplier", { min: 0, max: 100 }),
   };
+  if (value.expiryMode === "inactivity" && value.expiryMonths === null) errors.push("expiryMonths is required when expiryMode is inactivity");
   return errors.length ? { ok: false, errors } : { ok: true, value };
 }
 
@@ -161,6 +206,7 @@ export async function saveLoyaltySettings(shop: string, value: SettingsInput, up
     pointsPerDollar: new Prisma.Decimal(value.pointsPerDollar),
     paidTierMultiplier: new Prisma.Decimal(value.paidTierMultiplier),
     assumedTaxRate: new Prisma.Decimal(value.assumedTaxRate),
+    migrationPointsMultiplier: new Prisma.Decimal(value.migrationPointsMultiplier),
     updatedBy,
   };
   await prisma.loyaltyConfig.upsert({
@@ -342,6 +388,7 @@ export const ORDER_FOR_EARN_QUERY = `#graphql
       lineItems(first: 250) {
         nodes {
           id
+          title
           quantity
           isGiftCard
           originalUnitPriceSet { shopMoney { amount } }

@@ -8,25 +8,32 @@ const h = vi.hoisted(() => ({
   productTags: {} as Record<string, string[]>,
   gateMember: null as unknown,
   members: [] as Array<Record<string, unknown>>,
+  settings: {} as Record<string, unknown>,
+  granted: [] as Array<Record<string, unknown>>,
 }));
+
+const baseSettings = () => ({
+  pointsPerDollar: 1,
+  excludedProductTypes: [],
+  excludedTags: ["Gift Card", "Service"],
+  earnOnShipping: false,
+  earnOnTax: false,
+  pendingDays: 0,
+  paidTierMultiplier: 10,
+  earnRequiresMember: true,
+  memberTag: "gold-membership",
+  membershipProductTag: "Membership",
+  membershipMonths: 12,
+  signupBonusPoints: 0,
+  excludeDiscountedItems: true,
+});
 
 vi.mock("../models/loyalty.server", () => ({
   ORDER_FOR_EARN_QUERY: "query LoyaltyOrderForEarn",
   getAdminForShop: vi.fn(),
   gql: vi.fn(),
-  getLoyaltySettings: vi.fn(async () => ({
-    pointsPerDollar: 1,
-    excludedProductTypes: [],
-    excludedTags: ["Gift Card", "Service"],
-    earnOnShipping: false,
-    earnOnTax: false,
-    pendingDays: 0,
-    paidTierMultiplier: 1,
-    earnRequiresMember: true,
-    memberTag: "gold-membership",
-    excludeDiscountedItems: true,
-  })),
-  tierMultiplier: () => 1,
+  getLoyaltySettings: vi.fn(async () => h.settings),
+  tierMultiplier: (m: { tier: string }, s: { paidTierMultiplier: number }) => (m.tier === "paid" ? s.paidTierMultiplier : 1),
   enrichLinesWithProductInfo: vi.fn(async (_admin: unknown, lines: Array<{ productId?: string | null }>) =>
     lines.map((l) => ({ ...l, productType: "Thing", tags: (l.productId && h.productTags[l.productId]) || [] })),
   ),
@@ -44,6 +51,10 @@ vi.mock("../models/loyalty.server", () => ({
 vi.mock("../models/membership.server", () => ({
   getMemberForGate: vi.fn(async () => h.gateMember),
   syncMembershipForCustomer: vi.fn(async () => h.gateMember),
+  grantPurchasedMembership: vi.fn(async (p: Record<string, unknown>) => {
+    h.granted.push(p);
+    return { id: p.memberId, tier: "paid", paidUntil: new Date("2027-10-28T12:00:00Z"), memberships: [] };
+  }),
 }));
 
 vi.mock("../models/redemption.server", () => ({
@@ -101,6 +112,8 @@ describe("handleEarn member gate", () => {
     h.members = [];
     h.productTags = {};
     h.gateMember = null;
+    h.granted = [];
+    h.settings = baseSettings();
   });
 
   it("non-member without a membership product earns nothing and queues no sync", async () => {
@@ -126,8 +139,11 @@ describe("handleEarn member gate", () => {
     );
     expect(note).toMatch(/membership purchase/);
     expect(h.ledger).toHaveLength(1);
-    expect(h.ledger[0]).toMatchObject({ type: "earn", delta: 170, referenceId: "gid://shopify/Order/1001" });
+    // 买会员这一单就按付费会员 10 倍算：(120 + 50) × 10
+    expect(h.ledger[0]).toMatchObject({ type: "earn", delta: 1700, referenceId: "gid://shopify/Order/1001" });
     expect((h.ledger[0].meta as Record<string, unknown>).membershipPurchase).toBe(true);
+    expect(h.granted).toHaveLength(1);
+    expect(h.granted[0]).toMatchObject({ orderGid: "gid://shopify/Order/1001", months: 12 });
     expect(syncMembership).toEqual([
       { shop: "test.myshopify.com", customerGid: CUSTOMER, delaySeconds: MEMBERSHIP_SYNC_DELAY_SECONDS },
     ]);
@@ -140,8 +156,32 @@ describe("handleEarn member gate", () => {
     const { d, syncMembership } = deps();
     await handleEarn(orderEvent([{ id: 2, product_id: 50, price: "50.00" }]), d);
     expect(h.ledger).toHaveLength(1);
-    expect(h.ledger[0].delta).toBe(50);
+    expect(h.ledger[0].delta).toBe(500);
     expect(syncMembership).toHaveLength(1);
+  });
+
+  it("owner rule 10/29: with earnRequiresMember off, anyone with a customer record earns 1 pt/$ and paid members 10 pt/$", async () => {
+    h.settings = { ...baseSettings(), earnRequiresMember: false };
+    h.gateMember = nonMember;
+    h.productTags = { "gid://shopify/Product/1": ["Jacket"] };
+    const { d } = deps();
+    const note = await handleEarn(orderEvent([{ id: 1, product_id: 1, price: "120.00" }]), d);
+    expect(note).toBeUndefined();
+    expect(h.ledger[0]).toMatchObject({ type: "earn", delta: 120 });
+    expect((h.ledger[0].meta as Record<string, unknown>).rules).toMatchObject({ tierMultiplier: 1, tier: "standard" });
+  });
+
+  it("first-time customer gets the signup bonus once, before the order points", async () => {
+    h.settings = { ...baseSettings(), earnRequiresMember: false, signupBonusPoints: 100 };
+    h.gateMember = null; // 我们没见过这个客人
+    h.productTags = { "gid://shopify/Product/1": ["Jacket"] };
+    const { d } = deps();
+    await handleEarn(orderEvent([{ id: 1, product_id: 1, price: "30.00" }]), d);
+    expect(h.ledger.map((l) => [l.type, l.delta])).toEqual([
+      ["signup_bonus", 100],
+      ["earn", 30],
+    ]);
+    expect(h.ledger[0]).toMatchObject({ referenceId: `signup:${CUSTOMER}` });
   });
 
   it("existing member earns without the membership shortcut", async () => {

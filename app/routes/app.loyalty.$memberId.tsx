@@ -15,7 +15,7 @@ import {
   syncBalanceMetafield,
 } from "../models/loyalty.server";
 import { syncMembershipForCustomer } from "../models/membership.server";
-import { issueRedemption } from "../models/redemption.server";
+import { issueRedemption, reverseStoreCredit } from "../models/redemption.server";
 import { enqueue, QUEUES } from "../jobs/queue.server";
 import { hasMemberTag, isMember } from "../lib/membership";
 import {
@@ -68,6 +68,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       id: r.id,
       createdAt: r.createdAt.toISOString().replace("T", " ").slice(0, 16),
       code: r.discountCode,
+      method: r.method,
       points: r.points,
       amount: formatCents(r.amountCents),
       channel: r.channel,
@@ -86,6 +87,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       pendingUntil: l.availableAt > now ? l.availableAt.toISOString().slice(0, 10) : null,
     })),
     redeemRules: {
+      redeemMethod: settings.redeemMethod,
       redeemPointsPerDollar: settings.redeemPointsPerDollar,
       minRedeemPoints: settings.minRedeemPoints,
       redeemStepPoints: settings.redeemStepPoints,
@@ -104,7 +106,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 
 type ActionResult =
   | { intent: "adjust"; ok: true; applied: boolean; balance: number; metafield: "synced" | "queued" }
-  | { intent: "redeem"; ok: true; applied: boolean; code: string; amount: string; points: number; expiresAt: string }
+  | { intent: "redeem"; ok: true; applied: boolean; method: string; code: string; amount: string; points: number; expiresAt: string }
+  | { intent: "reverse"; ok: true }
   | { intent: "membership"; ok: true; isMember: boolean }
   | { intent: string; ok: false; errors: string[] };
 
@@ -139,11 +142,21 @@ export const action = async ({ request, params }: ActionFunctionArgs): Promise<A
       intent,
       ok: true,
       applied: res.applied,
+      method: res.redemption.method,
       code: res.redemption.discountCode ?? "",
       amount: formatCents(res.redemption.amountCents),
       points: res.redemption.points,
       expiresAt: (res.redemption.expiresAt ? torontoTime(res.redemption.expiresAt) : ""),
     };
+  }
+
+  if (intent === "reverse") {
+    const id = String(form.get("redemptionId") ?? "");
+    const reason = String(form.get("reason") ?? "").trim() || "reversed by staff";
+    const res = await reverseStoreCredit(id, staff, reason, { getAdmin: getAdminForShop });
+    await enqueue(QUEUES.syncBalance, { shop: session.shop, memberId: member.id }).catch(() => undefined);
+    if (!res.ok) return { intent, ok: false, errors: [res.error] };
+    return { intent, ok: true };
   }
 
   if (intent === "membership") {
@@ -241,8 +254,20 @@ export default function LoyaltyMember() {
     }
   }, [adjustData, shopify]);
   useEffect(() => {
-    if (redeemData?.ok && redeemData.intent === "redeem") shopify.toast.show(`Code ${redeemData.code} issued`);
+    if (redeemData?.ok && redeemData.intent === "redeem")
+      shopify.toast.show(redeemData.method === "store_credit" ? `${redeemData.amount} store credit issued` : `Code ${redeemData.code} issued`);
   }, [redeemData, shopify]);
+  const reverseFetcher = useFetcher<ActionResult>();
+  useEffect(() => {
+    const d = reverseFetcher.data;
+    if (d?.ok && d.intent === "reverse") shopify.toast.show("Store credit reversed, points returned");
+    if (d && !d.ok && d.intent === "reverse") shopify.toast.show(d.errors.join("; "), { isError: true });
+  }, [reverseFetcher.data, shopify]);
+  const reverse = (redemptionId: string) => {
+    const reason = window.prompt("Reason for reversing this store credit (saved in the ledger):");
+    if (reason === null) return;
+    reverseFetcher.submit({ intent: "reverse", redemptionId, reason }, { method: "POST" });
+  };
   useEffect(() => {
     const d = membershipFetcher.data;
     if (d?.ok && d.intent === "membership") shopify.toast.show(d.isMember ? "Membership refreshed: member" : "Membership refreshed: not a member");
@@ -338,7 +363,16 @@ export default function LoyaltyMember() {
 
       <s-section heading="Issue redemption">
         <ErrorList errors={redeemErrors} />
-        {redeemData?.ok && redeemData.intent === "redeem" && (
+        {redeemData?.ok && redeemData.intent === "redeem" && redeemData.method === "store_credit" && (
+          <s-banner tone="success" heading={`${redeemData.amount} store credit added`}>
+            <s-paragraph>
+              {redeemData.points} points redeemed. The credit is on the customer&apos;s Shopify account now
+              {redeemData.expiresAt ? ` and expires ${redeemData.expiresAt} (Toronto time)` : ""}. Online: it shows at checkout
+              when they are logged in. POS: choose Store credit as the payment method.
+            </s-paragraph>
+          </s-banner>
+        )}
+        {redeemData?.ok && redeemData.intent === "redeem" && redeemData.method !== "store_credit" && (
           <s-banner tone="success" heading={`Discount code: ${redeemData.code}`}>
             <s-paragraph>
               {redeemData.amount} off, {redeemData.points} points, single use, only for this customer, expires {redeemData.expiresAt}{" "}
@@ -375,7 +409,9 @@ export default function LoyaltyMember() {
               <s-box padding="base" borderWidth="base" borderRadius="base" background="subdued">
                 <s-text>
                   {quote.ok
-                    ? `${formatCents(quote.amountCents)} off before tax (worth ${formatCents(quote.faceValueCents)}${redeemRules.redeemAmountIsTaxInclusive ? ` incl. ${Math.round(redeemRules.assumedTaxRate * 100)}% tax` : ""})${quote.multiplier !== 1 ? ` · ${quote.window?.label ?? "redeem window"} x${quote.multiplier} applied` : ""}${quote.minSubtotalCents ? ` · order subtotal must be at least ${formatCents(quote.minSubtotalCents)}` : ""}`
+                    ? redeemRules.redeemMethod === "store_credit"
+                      ? `${formatCents(quote.amountCents)} store credit${quote.multiplier !== 1 ? ` · ${quote.window?.label ?? "redeem window"} x${quote.multiplier} applied` : ""}`
+                      : `${formatCents(quote.amountCents)} off before tax (worth ${formatCents(quote.faceValueCents)}${redeemRules.redeemAmountIsTaxInclusive ? ` incl. ${Math.round(redeemRules.assumedTaxRate * 100)}% tax` : ""})${quote.multiplier !== 1 ? ` · ${quote.window?.label ?? "redeem window"} x${quote.multiplier} applied` : ""}${quote.minSubtotalCents ? ` · order subtotal must be at least ${formatCents(quote.minSubtotalCents)}` : ""}`
                     : quote.error}
                 </s-text>
               </s-box>
@@ -387,7 +423,7 @@ export default function LoyaltyMember() {
               {...(quote?.ok ? {} : { disabled: true })}
               {...busy(redeemFetcher)}
             >
-              Issue code
+              {redeemRules.redeemMethod === "store_credit" ? "Issue store credit" : "Issue code"}
             </s-button>
           </s-stack>
         )}
@@ -419,7 +455,7 @@ export default function LoyaltyMember() {
         <s-section heading="Redemptions">
           <s-table>
             <s-table-header-row>
-              <s-table-header listSlot="primary">Code</s-table-header>
+              <s-table-header listSlot="primary">Code / method</s-table-header>
               <s-table-header>Status</s-table-header>
               <s-table-header format="numeric">Points</s-table-header>
               <s-table-header format="numeric">Amount</s-table-header>
@@ -427,11 +463,12 @@ export default function LoyaltyMember() {
               <s-table-header>Issued</s-table-header>
               <s-table-header>Expires (Toronto)</s-table-header>
               <s-table-header>By</s-table-header>
+              <s-table-header>Action</s-table-header>
             </s-table-header-row>
             <s-table-body>
               {redemptions.map((r) => (
                 <s-table-row key={r.id}>
-                  <s-table-cell>{r.code ?? "—"}</s-table-cell>
+                  <s-table-cell>{r.code ?? (r.method === "store_credit" ? "Store credit" : "—")}</s-table-cell>
                   <s-table-cell>{r.status}</s-table-cell>
                   <s-table-cell>{r.points}</s-table-cell>
                   <s-table-cell>{r.amount}</s-table-cell>
@@ -439,6 +476,15 @@ export default function LoyaltyMember() {
                   <s-table-cell>{r.createdAt}</s-table-cell>
                   <s-table-cell>{r.expiresAt ?? "—"}</s-table-cell>
                   <s-table-cell>{r.issuedBy}</s-table-cell>
+                  <s-table-cell>
+                    {r.method === "store_credit" && r.status === "credited" ? (
+                      <s-button variant="tertiary" tone="critical" onClick={() => reverse(r.id)} {...busy(reverseFetcher)}>
+                        Reverse
+                      </s-button>
+                    ) : (
+                      "—"
+                    )}
+                  </s-table-cell>
                 </s-table-row>
               ))}
             </s-table-body>

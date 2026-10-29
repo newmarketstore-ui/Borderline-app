@@ -1,4 +1,8 @@
-// 积分兑换：报价 → 扣分 + 建 Redemption（同一事务）→ 建 Shopify 一次性专属折扣码 → 失败就退回（redeem_release）。
+// 积分兑换（老板 2026-10-29 定：1000 分 = $10 Store Credit）：
+//   store_credit（默认）：报价 → 扣分 + 建 Redemption（同一事务）→ storeCreditAccountCredit 发到顾客的 Shopify Store Credit
+//                        （线上结账、POS 收款都原生可用，不用码）→ 状态 credited；失败就退回（redeem_release）。
+//   discount_code（备用）：同上，但发一次性专属折扣码。
+// 店员撤销 Store Credit：reverseStoreCredit → storeCreditAccountDebit 扣回 + 退分（credited → cancelled）。
 // 核销：loyalty.earn 看到订单用了我们的码 → used。过期：sweep 把过期未用的码停用 + 退分。
 // 幂等：
 //   - 店员表单键 Redemption.idempotencyKey 唯一：同一次提交重放只发一张码
@@ -35,6 +39,7 @@ async function loadContext(memberId: string) {
 }
 
 const ruleSubset = (s: LoyaltySettings) => ({
+  redeemMethod: s.redeemMethod,
   redeemPointsPerDollar: s.redeemPointsPerDollar,
   minRedeemPoints: s.minRedeemPoints,
   redeemStepPoints: s.redeemStepPoints,
@@ -102,7 +107,45 @@ const DISCOUNT_USAGE = `#graphql
     }
   }`;
 
+const STORE_CREDIT_CREDIT = `#graphql
+  mutation LoyaltyStoreCreditCredit($id: ID!, $input: StoreCreditAccountCreditInput!) {
+    storeCreditAccountCredit(id: $id, creditInput: $input) {
+      storeCreditAccountTransaction { id account { id balance { amount currencyCode } } }
+      userErrors { field message code }
+    }
+  }`;
+
+const STORE_CREDIT_DEBIT = `#graphql
+  mutation LoyaltyStoreCreditDebit($id: ID!, $input: StoreCreditAccountDebitInput!) {
+    storeCreditAccountDebit(id: $id, debitInput: $input) {
+      storeCreditAccountTransaction { id account { id balance { amount currencyCode } } }
+      userErrors { field message code }
+    }
+  }`;
+
+const STORE_CREDIT_BALANCE = `#graphql
+  query LoyaltyStoreCreditBalance($id: ID!) {
+    customer(id: $id) {
+      storeCreditAccounts(first: 5) { nodes { id balance { amount currencyCode } } }
+    }
+  }`;
+
 type UserError = { field: string[] | null; message: string; code: string | null };
+type StoreCreditTx = { id: string; account: { id: string; balance: { amount: string; currencyCode: string } } };
+
+const MONTH_MS = 30.4375 * 24 * 60 * 60 * 1000;
+const dollars = (cents: number) => (cents / 100).toFixed(2);
+
+/** 顾客 Store Credit 余额（分）。没有账户 = 0。 */
+export async function getStoreCreditBalanceCents(admin: AdminGraphql, customerGid: string, currency = "CAD") {
+  const data = await gql<{ customer: { storeCreditAccounts: { nodes: StoreCreditTx["account"][] } } | null }>(
+    admin,
+    STORE_CREDIT_BALANCE,
+    { id: customerGid },
+  );
+  const acct = data.customer?.storeCreditAccounts.nodes.find((a) => a.balance.currencyCode === currency);
+  return acct ? Math.round(Number(acct.balance.amount) * 100) : 0;
+}
 
 export type IssueResult =
   | { ok: true; applied: boolean; redemption: Redemption; quote: RedemptionQuote | null }
@@ -148,17 +191,23 @@ export async function issueRedemption(
         windows,
       );
       if (!quote.ok) throw new QuoteError(quote);
+      const storeCredit = settings.redeemMethod === "store_credit";
       const redemption = await tx.redemption.create({
         data: {
           memberId: member.id,
           points: params.points,
           amountCents: quote.amountCents,
           currency: "CAD",
-          discountCode: buildRedemptionCode(settings.redeemCodePrefix, params.points, member.id),
+          method: settings.redeemMethod,
+          discountCode: storeCredit ? null : buildRedemptionCode(settings.redeemCodePrefix, params.points, member.id),
           status: "issued",
           channel: params.channel,
           issuedBy: params.issuedBy,
-          expiresAt: new Date(now.getTime() + settings.redeemExpiryHours * HOUR_MS),
+          expiresAt: storeCredit
+            ? settings.storeCreditExpiryMonths
+              ? new Date(now.getTime() + settings.storeCreditExpiryMonths * MONTH_MS)
+              : null
+            : new Date(now.getTime() + settings.redeemExpiryHours * HOUR_MS),
           idempotencyKey: params.idempotencyKey ?? null,
           meta: {
             multiplier: quote.multiplier,
@@ -176,7 +225,9 @@ export async function issueRedemption(
         type: "redeem",
         referenceType: "redemption",
         referenceId: `redemption:${redemption.id}`,
-        note: `${redemption.discountCode} (${formatCents(quote.amountCents)} off, ${params.channel}${quote.multiplier !== 1 ? `, x${quote.multiplier}` : ""})`,
+        note: storeCredit
+          ? `${formatCents(quote.amountCents)} store credit (${params.channel}${quote.multiplier !== 1 ? `, x${quote.multiplier}` : ""})`
+          : `${redemption.discountCode} (${formatCents(quote.amountCents)} off, ${params.channel}${quote.multiplier !== 1 ? `, x${quote.multiplier}` : ""})`,
         createdBy: params.issuedBy,
       });
       return { redemption, quote };
@@ -191,8 +242,45 @@ export async function issueRedemption(
     throw e;
   }
 
-  // 2) 建 Shopify 折扣码；失败 → 退分 + cancelled
   const { redemption, quote } = created;
+
+  // 2a) Store Credit：发到顾客账户；失败 → 退分 + cancelled
+  if (redemption.method === "store_credit") {
+    try {
+      const admin = await deps.getAdmin(member.shopDomain);
+      const data = await gql<{
+        storeCreditAccountCredit: { storeCreditAccountTransaction: StoreCreditTx | null; userErrors: UserError[] };
+      }>(admin, STORE_CREDIT_CREDIT, {
+        id: member.shopifyCustomerId,
+        input: {
+          creditAmount: { amount: dollars(redemption.amountCents), currencyCode: redemption.currency },
+          ...(redemption.expiresAt ? { expiresAt: redemption.expiresAt.toISOString() } : {}),
+          notify: true, // Shopify 自己给顾客发「您收到了 Store Credit」邮件
+        },
+      });
+      const res = data.storeCreditAccountCredit;
+      if (res.userErrors.length || !res.storeCreditAccountTransaction) {
+        throw new Error(`storeCreditAccountCredit: ${res.userErrors.map((u) => u.message).join("; ") || "no transaction returned"}`);
+      }
+      const updated = await prisma.redemption.update({
+        where: { id: redemption.id },
+        data: {
+          status: "credited",
+          storeCreditTransactionId: res.storeCreditAccountTransaction.id,
+          storeCreditAccountId: res.storeCreditAccountTransaction.account.id,
+          meta: { ...(redemption.meta as object), storeCreditBalanceAfter: res.storeCreditAccountTransaction.account.balance.amount },
+        },
+      });
+      return { ok: true, applied: true, redemption: updated, quote };
+    } catch (e) {
+      const message = (e as Error).message ?? String(e);
+      console.error(`[loyalty] redemption ${redemption.id} store credit failed, releasing points:`, message);
+      await releaseRedemption(redemption.id, "cancelled", "system", `Store credit not issued: ${message.slice(0, 200)}`);
+      return { ok: false, error: `Shopify rejected the store credit, points were returned: ${message.slice(0, 200)}`, quote };
+    }
+  }
+
+  // 2b) 折扣码；失败 → 退分 + cancelled
   try {
     const admin = await deps.getAdmin(member.shopDomain);
     const data = await gql<{
@@ -262,6 +350,52 @@ export async function releaseRedemption(
   });
 }
 
+// ── 撤销 Store Credit（店员操作）────────────────────────────────────────────
+
+/**
+ * credited → cancelled：从顾客 Store Credit 扣回同额（余额不够 Shopify 会拒，原样报错）+ 退分（redeem_release）。
+ * 幂等：状态只从 credited 走一次；并发第二次直接返回 false。
+ */
+export async function reverseStoreCredit(
+  redemptionId: string,
+  by: string,
+  note: string,
+  deps: RedemptionDeps,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const r = await prisma.redemption.findUnique({ where: { id: redemptionId }, include: { member: true } });
+  if (!r || r.method !== "store_credit") return { ok: false, error: "Not a store credit redemption" };
+  if (r.status !== "credited") return { ok: false, error: `Cannot reverse a redemption in status ${r.status}` };
+  const admin = await deps.getAdmin(r.member.shopDomain);
+  const data = await gql<{
+    storeCreditAccountDebit: { storeCreditAccountTransaction: StoreCreditTx | null; userErrors: UserError[] };
+  }>(admin, STORE_CREDIT_DEBIT, {
+    id: r.storeCreditAccountId ?? r.member.shopifyCustomerId,
+    input: { debitAmount: { amount: dollars(r.amountCents), currencyCode: r.currency } },
+  });
+  const res = data.storeCreditAccountDebit;
+  if (res.userErrors.length || !res.storeCreditAccountTransaction) {
+    return { ok: false, error: res.userErrors.map((u) => u.message).join("; ") || "Shopify returned no transaction" };
+  }
+  const txId = res.storeCreditAccountTransaction.id;
+  await withMemberLock(r.memberId, async (tx) => {
+    const moved = await tx.redemption.updateMany({
+      where: { id: r.id, status: "credited" },
+      data: { status: "cancelled", storeCreditReversalId: txId },
+    });
+    if (moved.count === 0) return;
+    await insertLedger(tx, {
+      memberId: r.memberId,
+      delta: r.points,
+      type: "redeem_release",
+      referenceType: "redemption",
+      referenceId: `redemption:${r.id}`,
+      note: `Store credit ${formatCents(r.amountCents)} reversed: ${note}`,
+      createdBy: by,
+    });
+  });
+  return { ok: true };
+}
+
 // ── 核销 ────────────────────────────────────────────────────────────────────
 
 /**
@@ -310,6 +444,14 @@ export async function sweepRedemptions(deps: RedemptionDeps, now = new Date()) {
   const released: Array<{ shop: string; memberId: string }> = [];
   for (const r of due) {
     try {
+      if (r.method === "store_credit") {
+        // 还停在 issued = 扣了分但 Store Credit 没确认到账（进程中途挂了）：退分
+        if (await releaseRedemption(r.id, "cancelled", "system", "store credit was never confirmed")) {
+          out.orphans++;
+          released.push({ shop: r.member.shopDomain, memberId: r.memberId });
+        }
+        continue;
+      }
       if (!r.discountCodeId) {
         if (await releaseRedemption(r.id, "cancelled", "system", "discount code was never created")) {
           out.orphans++;
