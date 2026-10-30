@@ -87,7 +87,7 @@ Owner rules (2026-10-29): every customer with a Shopify profile earns **1 pt per
 | Storefront | `extensions/loyalty-theme` (app blocks *Points badge*, *Points banner*) → App Proxy `/apps/bl-points/{estimate,me,redeem}` | Place the blocks in the theme editor; no theme code changes. |
 | Shared service | `app/models/loyaltyPublic.server.ts` | `ensureMember` (auto-enrol from Shopify), `memberSummary`, `estimatePoints`, `redeemForMember`. |
 
-Required scopes (see `shopify.app.toml`): `read_customers, write_customers, write_discounts, write_orders, read_store_credit_accounts, write_store_credit_account_transactions` plus the original read scopes. The App Proxy is `/apps/bl-points` → `/proxy/loyalty`.
+Required scopes (see `shopify.app.toml`): `read_customers, write_customers, write_discounts, write_orders, read_store_credit_accounts, write_store_credit_account_transactions` plus the original read scopes. The App Proxy in the app config is `/apps/bl-points` → `/proxy/loyalty`, but the store install got `/apps/loyalty-1` (Shopify renamed it because Appstle owns `/apps/loyalty`); the theme blocks have a `proxy_path` setting (default `/apps/loyalty-1`).
 
 ### Idempotency
 

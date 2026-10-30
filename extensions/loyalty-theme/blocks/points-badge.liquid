@@ -11,6 +11,7 @@
   data-label-standard="{{ block.settings.label_standard | escape }}"
   data-label-paid="{{ block.settings.label_paid | escape }}"
   data-label-member="{{ block.settings.label_member | escape }}"
+  data-proxy="{{ block.settings.proxy_path | default: "/apps/loyalty-1" | escape }}"
   data-logged-in="{% if customer %}1{% else %}0{% endif %}"
   style="font-size: {{ block.settings.font_size }}px; color: {{ block.settings.color }}; margin: {{ block.settings.margin }}px 0;"
   hidden
@@ -25,6 +26,7 @@
   "name": "Points badge",
   "target": "section",
   "settings": [
+    { "type": "text", "id": "proxy_path", "label": "App proxy path", "info": "Shopify admin → Apps → BorderlineAI shows the real path (currently /apps/loyalty-1). Change here if Customize URL is used.", "default": "/apps/loyalty-1" },
     { "type": "text", "id": "label_standard", "label": "Text (guest / member)", "default": "Earn [points] points with this item" },
     { "type": "text", "id": "label_paid", "label": "Text (paid member)", "default": "Earn [points] points as a paid member" },
     { "type": "text", "id": "label_member", "label": "Suffix when not a paid member", "default": "· paid members earn [paid]" },

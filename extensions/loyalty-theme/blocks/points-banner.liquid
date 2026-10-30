@@ -8,6 +8,7 @@
   class="bl-points-banner"
   data-bl-points-banner
   data-cart-cents="{{ cart.total_price }}"
+  data-proxy="{{ block.settings.proxy_path | default: "/apps/loyalty-1" | escape }}"
   data-logged-in="{% if customer %}1{% else %}0{% endif %}"
   data-account-url="{{ routes.account_url }}"
   data-login-url="{{ routes.account_login_url }}"
@@ -29,6 +30,7 @@
   "name": "Points banner",
   "target": "section",
   "settings": [
+    { "type": "text", "id": "proxy_path", "label": "App proxy path", "info": "Shopify admin → Apps → BorderlineAI shows the real path (currently /apps/loyalty-1). Change here if Customize URL is used.", "default": "/apps/loyalty-1" },
     { "type": "text", "id": "text_balance", "label": "Balance text", "default": "You have [balance] points" },
     { "type": "text", "id": "text_logged_in", "label": "Logged-in text", "default": "This order earns [points] points" },
     { "type": "text", "id": "text_guest", "label": "Guest text", "default": "Log in to earn [points] points on this order" },
