@@ -1,5 +1,6 @@
-/* Borderline Points · 主题 app block 共用脚本（商品页徽章 + 购物车积分条）。
-   只读两个 App Proxy 接口：/apps/bl-points/estimate（规则，可缓存）和 /apps/bl-points/me（登录顾客余额，不缓存）。 */
+/* Borderline Points · theme app block script (product-page badge + cart banner).
+   Reads two App Proxy endpoints: <proxy>/estimate (rules, cacheable) and <proxy>/me (logged-in balance, no cache).
+   The proxy path comes from the block setting (data-proxy); the store install is /apps/loyalty-1. */
 (function () {
   if (window.__blLoyaltyLoaded) return;
   window.__blLoyaltyLoaded = true;
@@ -8,6 +9,10 @@
   base = base.replace(/\/$/, "");
   var estimateCache = {};
   var mePromise = null;
+  function proxyBase(el) {
+    var p = (el && el.getAttribute("data-proxy")) || "/apps/loyalty-1";
+    return base + (p.charAt(0) === "/" ? p : "/" + p).replace(/\/$/, "");
+  }
 
   function fmt(template, vars) {
     // 占位符用 [points] / [paid] / [balance]（主题编辑器的默认值不允许出现 {{ }}）
@@ -15,18 +20,18 @@
       return vars[k] != null ? vars[k] : "";
     });
   }
-  function estimate(cents) {
+  function estimate(cents, el) {
     var c = Math.max(0, parseInt(cents, 10) || 0);
     if (!estimateCache[c]) {
-      estimateCache[c] = fetch(base + "/apps/bl-points/estimate?cents=" + c, { credentials: "same-origin" }).then(function (r) {
+      estimateCache[c] = fetch(proxyBase(el) + "/estimate?cents=" + c, { credentials: "same-origin" }).then(function (r) {
         return r.ok ? r.json() : null;
       });
     }
     return estimateCache[c];
   }
-  function me() {
+  function me(el) {
     if (!mePromise) {
-      mePromise = fetch(base + "/apps/bl-points/me", { credentials: "same-origin", cache: "no-store" }).then(function (r) {
+      mePromise = fetch(proxyBase(el) + "/me", { credentials: "same-origin", cache: "no-store" }).then(function (r) {
         return r.ok ? r.json() : { loggedIn: false };
       }).catch(function () { return { loggedIn: false }; });
     }
@@ -36,7 +41,7 @@
   function initBadge(el) {
     var cents = el.getAttribute("data-cents");
     var loggedIn = el.getAttribute("data-logged-in") === "1";
-    Promise.all([estimate(cents), loggedIn ? me() : Promise.resolve(null)]).then(function (res) {
+    Promise.all([estimate(cents, el), loggedIn ? me(el) : Promise.resolve(null)]).then(function (res) {
       var est = res[0], m = res[1];
       if (!est) return;
       var paid = m && m.loggedIn && m.isPaidMember;
@@ -53,7 +58,7 @@
     var loggedIn = el.getAttribute("data-logged-in") === "1";
     var textEl = el.querySelector("[data-bl-banner-text]");
     var link = el.querySelector("[data-bl-banner-link]");
-    Promise.all([estimate(cents), loggedIn ? me() : Promise.resolve(null)]).then(function (res) {
+    Promise.all([estimate(cents, el), loggedIn ? me(el) : Promise.resolve(null)]).then(function (res) {
       var est = res[0], m = res[1];
       if (!est) return;
       if (m && m.loggedIn) {
