@@ -32,6 +32,10 @@ export async function handleSyncCustomer(event: WebhookEvent): Promise<string | 
     });
   }
   if (member || tagged) {
+    // 我们自己写余额 metafield 也会触发 customers/update；标签没变且 2 分钟内刚同步过就不再去拉会员资格（防止放大成一串无用请求）
+    const sameTags = !c.tags || JSON.stringify([...c.tags].sort()) === JSON.stringify([...(member?.tags ?? [])].sort());
+    const fresh = member?.membershipSyncedAt && Date.now() - member.membershipSyncedAt.getTime() < 2 * 60 * 1000;
+    if (member && sameTags && fresh) return "membership synced <2 min ago and tags unchanged; skipped";
     await enqueue(QUEUES.syncMembership, { shop: event.shopDomain, customerGid: c.gid }, {}, 10_000);
     return member ? undefined : "new member tag seen; membership sync queued";
   }
