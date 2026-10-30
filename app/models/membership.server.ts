@@ -5,6 +5,7 @@ import type { Member, Membership, Prisma } from "@prisma/client";
 
 import prisma from "../db.server";
 import {
+  membershipActive,
   APPSTLE_MEMBERSHIP_METAFIELD,
   isMember,
   paidUntilFrom,
@@ -91,11 +92,17 @@ export async function applyMembership(
   opts: { memberTag: string; createIfMember: boolean; source?: string; now?: Date },
 ): Promise<MemberWithMemberships | null> {
   const now = opts.now ?? new Date();
-  const existing = await prisma.member.findUnique({ where: { shopifyCustomerId: data.customer.gid } });
-  const member = isMember({ tags: data.tags, memberships: data.subscriptions }, now, opts.memberTag);
+  const existing = await prisma.member.findUnique({
+    where: { shopifyCustomerId: data.customer.gid },
+    include: { memberships: { where: { source: { not: "appstle" } } } },
+  });
+  // 2026-10-30 修复：同步只刷新 Appstle 那部分；我们自己记的付费会员（买会员商品 / 店员手动）照样算数，
+  // 否则 customers/update 一到就把刚买的会员打回普通档（#23907 → #23908 只给 1 分的事故）
+  const own = (existing?.memberships ?? []).filter((m) => membershipActive(m, now));
+  const member = isMember({ tags: data.tags, memberships: [...data.subscriptions, ...own] }, now, opts.memberTag);
   if (!existing && !(opts.createIfMember && member)) return null;
 
-  const paidUntil = paidUntilFrom(data.subscriptions, now);
+  const paidUntil = paidUntilFrom([...data.subscriptions, ...own], now);
   return prisma.$transaction(async (tx) => {
     const base: Prisma.MemberUncheckedUpdateInput = {
       ...contact(data.customer),

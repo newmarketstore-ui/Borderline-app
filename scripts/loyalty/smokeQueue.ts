@@ -247,6 +247,7 @@ async function main() {
     await import("../../app/jobs/loyaltyRefund.server");
   const { handleSweep } = await import("../../app/jobs/sweep.server");
   const { appendLedger } = await import("../../app/models/ledger.server");
+  const { handleSyncMembership } = await import("../../app/jobs/loyaltySyncCustomer.server");
   const { issueRedemption, reverseStoreCredit, sweepRedemptions } =
     await import("../../app/models/redemption.server");
 
@@ -430,6 +431,17 @@ async function main() {
         jobs: syncC.length,
         delayS,
       },
+    );
+
+    // 3b. 买会员之后 Shopify 客户资料同步（Appstle 那边没有标签 / 合约）→ 不能把我们记的付费会员打回普通档
+    await handleSyncMembership({ shop: SHOP, customerGid: BUYER_C }, { getAdmin: async () => stubAdmin });
+    const cAfterSync = await member(BUYER_C);
+    check(
+      "membership purchase survives a Shopify membership sync (tier stays paid, own contract kept)",
+      cAfterSync?.tier === "paid" &&
+        Boolean(cAfterSync?.paidUntil && cAfterSync.paidUntil.getTime() > Date.now()) &&
+        cAfterSync.memberships.some((m) => m.source === "shopify_order" && m.status === "active"),
+      { tier: cAfterSync?.tier, paidUntil: cAfterSync?.paidUntil, memberships: cAfterSync?.memberships.map((m) => `${m.source}:${m.status}`) },
     );
 
     // 4. 退一半
@@ -699,6 +711,18 @@ async function main() {
     );
     const scRev2 = sc.ok ? await reverseStoreCredit(sc.redemption.id, "smoke", "again", { getAdmin: async () => stubAdmin }) : { ok: true as const };
     check("store credit reverse replay: refused, no second debit", !scRev2.ok && calls.storeCreditDebit.length === 1);
+
+    // 8b. 新规则下，自己记的付费会员（BUYER_C，无 Appstle 标签）再下单按 10 倍
+    const ORDER_C2 = orderPayload(8, BUYER_C, [{ id: 71, product_id: 1, price: "20.00" }]);
+    const evC2 = await deliver("orders/paid", QUEUES.earn, ORDER_C2);
+    const earnC2 = await prisma.pointsLedger.findUnique({
+      where: { type_referenceId: { type: "earn", referenceId: ORDER_C2.admin_graphql_api_id } },
+    });
+    check(
+      "new rules: member who bought the membership in store earns 10 pt/$ on the next order (200)",
+      evC2.status === "done" && earnC2?.delta === 200,
+      { note: evC2.error, delta: earnC2?.delta },
+    );
 
     // 9. POS 当场抵扣（cart_discount）：扣分 + 发标题，不调 Shopify；订单带这个标题 → used；没成交到期 → 退分
     await appendLedger({

@@ -57,6 +57,10 @@ vi.mock("../models/membership.server", () => ({
   }),
 }));
 
+vi.mock("../db.server", () => ({
+  default: { member: { update: vi.fn(async (args: { data: Record<string, unknown> }) => ({ id: "m1", ...args.data, memberships: [] })) } },
+}));
+
 vi.mock("../models/redemption.server", () => ({
   markRedemptionUsed: vi.fn(async () => ({ used: 0, late: 0 })),
 }));
@@ -190,7 +194,9 @@ describe("handleEarn member gate", () => {
     const { d, syncMembership } = deps();
     const note = await handleEarn(orderEvent([{ id: 1, product_id: 1, price: "80.00" }]), d);
     expect(note).toBeUndefined();
-    expect(h.ledger[0].delta).toBe(80);
+    // gold-membership 标签 = 付费会员 → 10 倍（即使 Member 行的 tier 列还是 standard，10/30 修复）
+    expect(h.ledger[0].delta).toBe(800);
+    expect((h.ledger[0].meta as Record<string, unknown>).rules).toMatchObject({ tierMultiplier: 10 });
     expect(syncMembership).toHaveLength(0);
   });
 });

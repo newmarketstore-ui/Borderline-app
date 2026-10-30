@@ -6,8 +6,10 @@
 //   Membership 的商品 → 这一单按会员给分，同时排一个 2 分钟后的 loyalty.sync_membership 把会员资格补上。
 import type { WebhookEvent } from "@prisma/client";
 
+import prisma from "../db.server";
+
 import { computeEarnPoints } from "../lib/loyaltyMath";
-import { earnGate, orderHasMembershipProduct } from "../lib/membership";
+import { earnGate, isMember, orderHasMembershipProduct } from "../lib/membership";
 import { normalizeOrderGraphql, normalizeOrderWebhook, type NormalizedOrder } from "../lib/shopifyPayload";
 import {
   appendLedger,
@@ -144,7 +146,16 @@ export async function handleEarn(event: WebhookEvent, deps: EarnDeps = defaultEa
     notes.push("membership purchase: paid tier granted");
   }
   const membershipNote = notes.join("; ");
-  const multiplier = tierMultiplier(member, settings, orderDate);
+  // 倍数：tier 列 或 任一有效会员凭证（标签 / Appstle 合约 / 自己记的合约）→ 付费倍数
+  const effectivePaid =
+    tierMultiplier(member, settings, orderDate) !== 1 ||
+    isMember({ tags: order.customer.tags ?? gateMember?.tags ?? member.tags, memberships: gateMember?.memberships ?? [] }, orderDate, settings.memberTag) ||
+    membershipPurchase;
+  const multiplier = effectivePaid ? settings.paidTierMultiplier : 1;
+  if (effectivePaid && member.tier !== "paid") {
+    // 让缓存列跟上，下次读会员页 / POS 瓷砖直接一致
+    member = await prisma.member.update({ where: { id: member.id }, data: { tier: "paid" }, include: { memberships: true } });
+  }
 
   const result = computeEarnPoints(
     { ...order.earn, lines },
