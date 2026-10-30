@@ -1,5 +1,5 @@
 // 顾客账户扩展 → 我们后端。APP_URL 部署后改成正式域名（DEPLOY.md 第 3 步）。
-export const APP_URL = "https://borderline-ai.fly.dev";
+export const APP_URL = "https://borderline-app-lntir.ondigitalocean.app";
 
 async function authHeaders() {
   const token = await shopify.sessionToken.get();

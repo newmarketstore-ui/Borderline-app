@@ -2,7 +2,7 @@
 
 client_id = "c3c85ae5dff56888ac2834cb8b31f7d6"
 name = "BorderlineAI"
-application_url = "https://borderline-ai.fly.dev"
+application_url = "https://borderline-app-lntir.ondigitalocean.app"
 embedded = true
 
 [access_scopes]
@@ -54,15 +54,15 @@ api_version = "2026-04"
 
 # 店面 App Proxy：主题 / 顾客端 JS 调 https://<店>/apps/loyalty/* → 我们的 /proxy/loyalty/*（Shopify 签名 + logged_in_customer_id）
 [app_proxy]
-url = "https://borderline-ai.fly.dev/proxy/loyalty"
+url = "https://borderline-app-lntir.ondigitalocean.app/proxy/loyalty"
 subpath = "loyalty"
 prefix = "apps"
 
 [auth]
 redirect_urls = [
-  "https://borderline-ai.fly.dev/auth/callback",
-  "https://borderline-ai.fly.dev/auth/shopify/callback",
-  "https://borderline-ai.fly.dev/api/auth/callback"
+  "https://borderline-app-lntir.ondigitalocean.app/auth/callback",
+  "https://borderline-app-lntir.ondigitalocean.app/auth/shopify/callback",
+  "https://borderline-app-lntir.ondigitalocean.app/api/auth/callback"
 ]
 
 [build]

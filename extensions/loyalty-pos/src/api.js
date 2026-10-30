@@ -1,5 +1,5 @@
 // POS 扩展 → 我们后端。APP_URL 在部署到 DigitalOcean 后改成正式域名（见 DEPLOY.md 第 3 步），然后 `shopify app deploy`。
-export const APP_URL = "https://borderline-ai.fly.dev";
+export const APP_URL = "https://borderline-app-lntir.ondigitalocean.app";
 
 async function authHeaders() {
   const token = await shopify.session.getSessionToken();
