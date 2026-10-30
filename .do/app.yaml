@@ -7,7 +7,7 @@ region: tor
 services:
   - name: web
     github:
-      repo: newmarketstore-ui/<GITHUB_REPO>
+      repo: newmarketstore-ui/Borderline-app
       branch: main
       deploy_on_push: true
     dockerfile_path: Dockerfile
