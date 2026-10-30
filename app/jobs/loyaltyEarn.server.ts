@@ -41,6 +41,7 @@ export type EarnDeps = {
   getAdmin: (shop: string) => Promise<AdminGraphql>;
   enqueueSyncBalance: (shop: string, memberId: string) => Promise<unknown>;
   enqueueSyncMembership: (shop: string, customerGid: string, delaySeconds: number) => Promise<unknown>;
+  enqueueSyncTag?: (shop: string, memberId: string) => Promise<unknown>;
 };
 
 export const defaultEarnDeps: EarnDeps = {
@@ -48,6 +49,7 @@ export const defaultEarnDeps: EarnDeps = {
   enqueueSyncBalance: (shop, memberId) => enqueue(QUEUES.syncBalance, { shop, memberId }, {}, 10_000),
   enqueueSyncMembership: (shop, customerGid, delaySeconds) =>
     enqueue(QUEUES.syncMembership, { shop, customerGid }, { startAfter: delaySeconds }, 10_000),
+  enqueueSyncTag: (shop, memberId) => enqueue(QUEUES.syncTag, { shop, memberId }, {}, 10_000),
 };
 
 export async function handleEarn(event: WebhookEvent, deps: EarnDeps = defaultEarnDeps): Promise<string | void> {
@@ -226,6 +228,8 @@ export async function handleEarn(event: WebhookEvent, deps: EarnDeps = defaultEa
 
   // metafield 同步单独排队（有自己的重试），不让它拖垮记账
   await deps.enqueueSyncBalance(shop, updated.id);
+  // 这单可能让他变成付费会员（买会员商品）→ 对齐付费会员标签
+  if (deps.enqueueSyncTag) await deps.enqueueSyncTag(shop, updated.id);
   const finalNotes = [membershipNote, usedNote.slice(2)].filter(Boolean).join("; ");
   return applied ? finalNotes || undefined : `already applied (idempotent)${finalNotes ? `; ${finalNotes}` : ""}`;
 }

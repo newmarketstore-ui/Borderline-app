@@ -9,7 +9,8 @@ import { hasMemberTag } from "../lib/membership";
 import { customerFromRest } from "../lib/shopifyPayload";
 import { getAdminForShop, getLoyaltySettings, syncBalanceMetafield, type AdminGraphql } from "../models/loyalty.server";
 import { syncMembershipForCustomer } from "../models/membership.server";
-import { enqueue, QUEUES, type SyncBalanceJobData, type SyncMembershipJobData } from "./queue.server";
+import { reconcilePaidTag } from "../models/paidTag.server";
+import { enqueue, QUEUES, type SyncBalanceJobData, type SyncMembershipJobData, type SyncTagJobData } from "./queue.server";
 
 export async function handleSyncCustomer(event: WebhookEvent): Promise<string | void> {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- 外部 JSON
@@ -53,6 +54,15 @@ export async function handleSyncMembership(
     createIfMember: true,
     source: "customer_update",
   });
+  // 会员档可能刚变（入会 / 到期）→ 对齐付费会员标签（给原生自动折扣的客户分群用）
+  const member = await prisma.member.findUnique({ where: { shopifyCustomerId: data.customerGid }, select: { id: true } });
+  if (member) await enqueue(QUEUES.syncTag, { shop: data.shop, memberId: member.id }, {}, 10_000);
+}
+
+export async function handleSyncTag(data: SyncTagJobData): Promise<void> {
+  const admin = await getAdminForShop(data.shop);
+  const r = await reconcilePaidTag(admin, data.memberId);
+  if (r !== "unchanged") console.log(`[loyalty.sync_tag] ${data.memberId}: ${r}`);
 }
 
 export async function handleSyncBalance(data: SyncBalanceJobData): Promise<void> {

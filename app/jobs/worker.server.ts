@@ -5,10 +5,10 @@
 import type PgBoss from "pg-boss";
 
 import { processEvent } from "../models/webhookEvents.server";
-import { getBoss, QUEUES, type EventJobData, type SyncBalanceJobData, type SyncMembershipJobData } from "./queue.server";
+import { getBoss, QUEUES, type EventJobData, type SyncBalanceJobData, type SyncMembershipJobData, type SyncTagJobData } from "./queue.server";
 import { handleEarn } from "./loyaltyEarn.server";
 import { handleRefundReverse } from "./loyaltyRefund.server";
-import { handleSyncBalance, handleSyncCustomer, handleSyncMembership } from "./loyaltySyncCustomer.server";
+import { handleSyncBalance, handleSyncCustomer, handleSyncMembership, handleSyncTag } from "./loyaltySyncCustomer.server";
 import { handleGdpr } from "./gdpr.server";
 import { handleSweep } from "./sweep.server";
 
@@ -34,6 +34,9 @@ async function registerWorkers(boss: PgBoss) {
   });
   await boss.work<SyncMembershipJobData>(QUEUES.syncMembership, POLL, async ([job]) => {
     await handleSyncMembership(job.data);
+  });
+  await boss.work<SyncTagJobData>(QUEUES.syncTag, POLL, async ([job]) => {
+    await handleSyncTag(job.data);
   });
   await boss.work(QUEUES.sweep, { batchSize: 1, pollingIntervalSeconds: 30 }, async () => {
     await handleSweep();

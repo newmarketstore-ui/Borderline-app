@@ -3,6 +3,7 @@
 // 2. 待确认积分到期（pendingCached > 0）→ 重算缓存 + 同步 metafield
 // 3. 兑换码过期未用 → 停用 Shopify 折扣 + redeem_release 退分；扣了分却没拿到码 / Store Credit 交易号的孤儿 → 退分
 // 4. 积分过期（expiryMode = inactivity 的店）：N 个月没活动 → 余额清零
+// 6. 付费会员标签：到期降档 + tier 与客户标签不一致的排队对齐（每轮 ≤50）
 // 5. 服务工单：ready 超过 SERVICE_REMINDER_DAYS（默认 3）天没取 → 发取件提醒
 import prisma from "../db.server";
 import { JOB_FOR_TOPIC } from "../models/webhookEvents.server";
@@ -10,6 +11,7 @@ import { getAdminForShop, recomputeCaches, withMemberLock, type AdminGraphql } f
 import { expireInactiveAllShops } from "../models/expiry.server";
 import { sweepRedemptions } from "../models/redemption.server";
 import { sendPickupReminders } from "../models/services.server";
+import { findPaidTagWork } from "../models/paidTag.server";
 import { enqueue, QUEUES } from "./queue.server";
 
 export async function handleSweep(
@@ -48,6 +50,14 @@ export async function handleSweep(
 
   const expiry = await expireInactiveAllShops();
   for (const e of expiry) if (e.expired) console.log(`[loyalty.sweep] ${e.shop}: expired ${e.expired} members, ${e.points} points`);
+
+  try {
+    const tagWork = await findPaidTagWork();
+    for (const w of tagWork) await enqueue(QUEUES.syncTag, w, {}, 10_000);
+    if (tagWork.length) console.log(`[loyalty.sweep] queued ${tagWork.length} paid-tag reconciliations`);
+  } catch (e) {
+    console.error(`[loyalty.sweep] paid tag reconcile failed: ${(e as Error).message}`);
+  }
 
   try {
     const rem = await sendPickupReminders();

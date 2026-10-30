@@ -9,6 +9,7 @@ export const QUEUES = {
   syncCustomer: "loyalty.sync_customer",
   syncBalance: "loyalty.sync_balance",
   syncMembership: "loyalty.sync_membership",
+  syncTag: "loyalty.sync_tag",
   gdpr: "gdpr.process",
   sweep: "loyalty.sweep",
 } as const;
@@ -19,6 +20,7 @@ export type QueueName = (typeof QUEUES)[keyof typeof QUEUES];
 export type EventJobData = { eventId: string };
 export type SyncBalanceJobData = { shop: string; memberId: string };
 export type SyncMembershipJobData = { shop: string; customerGid: string };
+export type SyncTagJobData = { shop: string; memberId: string };
 
 declare global {
   // eslint-disable-next-line no-var
