@@ -10,7 +10,8 @@
   var mePromise = null;
 
   function fmt(template, vars) {
-    return String(template || "").replace(/\{\{\s*(\w+)\s*\}\}/g, function (_, k) {
+    // 占位符用 [points] / [paid] / [balance]（主题编辑器的默认值不允许出现 {{ }}）
+    return String(template || "").replace(/\[(\w+)\]/g, function (_, k) {
       return vars[k] != null ? vars[k] : "";
     });
   }
