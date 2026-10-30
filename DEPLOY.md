@@ -36,6 +36,13 @@
 6. 迁移 Appstle 积分（见 README「Loyalty module → Importing Appstle balances」）：冻结日当天重跑导出 → `--apply --only` 一人试点 → 全量 → 对账 → 双轨 30 天 → 卸载 Appstle。
 7. 切自定义域名（可选），确认无误后停 Fly 机器。
 
+## 服务工单模块需要的环境变量（2026-10-30）
+
+- `KLAVIYO_PRIVATE_KEY`：Klaviyo 私钥（Settings → API keys，权限 Events: Write、Profiles: Write）。没配之前所有通知只记日志不发。
+- `SERVICE_STATUS_BASE`：客人状态页前缀，默认 `https://borderlinestore.ca/apps/loyalty-1`，不用改。
+- `SERVICE_REMINDER_DAYS`：ready 几天没取发提醒，默认 3。
+- 加法：DO 控制台 → App → Settings → borderline-app → Environment Variables → Add（选 Encrypt）→ Save 会自动重新部署；或改 `.do/app.yaml` 后 `doctl apps update`。
+
 ## 回滚
 - DO 控制台 Deployments → 上一个成功版本 Rollback；数据库迁移只加表 / 加列，旧版本可共存。
 - 扩展：`shopify app versions list` → `shopify app release --version <上一版>`。

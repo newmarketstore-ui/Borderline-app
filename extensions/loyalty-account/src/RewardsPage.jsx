@@ -3,7 +3,7 @@ import "@shopify/ui-extensions/preact";
 import { render } from "preact";
 import { useEffect, useMemo, useState } from "preact/hooks";
 
-import { getMe, newKey, redeem } from "./api";
+import { getMe, getServices, newKey, redeem } from "./api";
 
 export default async () => {
   render(<Extension />, document.body);
@@ -17,6 +17,7 @@ function Extension() {
   const [done, setDone] = useState(null);
   const [selected, setSelected] = useState(null);
   const [key, setKey] = useState(() => newKey());
+  const [services, setServices] = useState(null);
 
   const load = () =>
     getMe()
@@ -28,6 +29,7 @@ function Extension() {
       .catch((e) => setError(e.message));
   useEffect(() => {
     load();
+    getServices().then(setServices).catch(() => setServices([]));
   }, []);
 
   const submit = async () => {
@@ -115,6 +117,34 @@ function Extension() {
                     <s-text key={i}>
                       {`${r.at.slice(0, 10)} · ${label(r.type, i18n)} · ${r.delta > 0 ? "+" : ""}${r.delta}${r.orderName ? ` · ${r.orderName}` : ""}`}
                     </s-text>
+                  ))}
+                </s-stack>
+              )}
+            </s-section>
+
+            <s-section heading={i18n.translate("services_heading")}>
+              {services === null ? (
+                <s-text tone="subdued">{i18n.translate("loading")}</s-text>
+              ) : services.length === 0 ? (
+                <s-text tone="subdued">{i18n.translate("services_empty")}</s-text>
+              ) : (
+                <s-stack direction="block" gap="small-200">
+                  {services.map((t) => (
+                    <s-stack key={t.id} direction="block" gap="none">
+                      <s-text>
+                        {`${t.store} · Tag #${t.tagNumber} · ${t.services.join(", ")}`}
+                      </s-text>
+                      <s-text tone="subdued">
+                        {t.status === "ready"
+                          ? i18n.translate("service_ready")
+                          : t.status === "picked_up"
+                            ? i18n.translate("service_picked_up", { date: (t.pickedUpAt || "").slice(0, 10) })
+                            : t.status === "cancelled"
+                              ? t.statusLabel
+                              : i18n.translate("service_eta", { status: t.statusLabel, date: (t.etaAt || "").slice(0, 10), ahead: t.ahead })}
+                      </s-text>
+                      <s-link href={t.statusUrl}>{i18n.translate("service_track")}</s-link>
+                    </s-stack>
                   ))}
                 </s-stack>
               )}

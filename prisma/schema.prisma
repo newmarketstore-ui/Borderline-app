@@ -303,3 +303,115 @@ model AppModule {
 
   @@unique([shopDomain, key])
 }
+
+// ── 打蜡 / 调校服务工单（老板 2026-10-30 定流程：客人扫码填表 → 工单直接进后台；订单不必对上）──
+
+model ServiceStore {
+  id                String  @id @default(cuid())
+  shopDomain        String
+  key               String // rh | ott | nmk
+  name              String
+  shopifyLocationId String? // gid://shopify/Location/…（POS 订单归店用）
+  tagMin            Int
+  tagMax            Int
+  techsPerDay       Int     @default(1)
+  etaRules          Json? // {tiers:[{maxAhead,days}], sameDayUntilHour, closedWeekdays:[0]}
+  openHour          Int     @default(10)
+  closeHour         Int     @default(19)
+  timezone          String  @default("America/Toronto")
+  address           String?
+  hoursText         String?
+  phone             String?
+  active            Boolean @default(true)
+  sortOrder         Int     @default(0)
+  updatedAt         DateTime @updatedAt
+  createdAt         DateTime @default(now())
+
+  @@unique([shopDomain, key])
+}
+
+model ServiceType {
+  id               String  @id @default(cuid())
+  shopDomain       String
+  key              String // machine_wax | hand_wax | side_edge | essential_tune | performance_tune | full_tune | base_grind | full_edge_tune | rust_removal | base_repair | base_cleaning | binding_install | flat_mount | boot_molding
+  name             String
+  category         String // wax | edge | tune | base | mount | boot | other
+  durationMin      Int     @default(30)
+  priceCents       Int?
+  memberPriceCents Int?
+  needsEdgeAngle   Boolean @default(false) // 含修刃 → 可选刃角
+  needsBodyMetrics Boolean @default(false) // 装固定器 → 身高体重 / 单板角度
+  stores           String[] @default([]) // 在哪些店提供
+  sortOrder        Int     @default(0)
+  active           Boolean @default(true)
+  updatedAt        DateTime @updatedAt
+
+  @@unique([shopDomain, key])
+}
+
+model ServiceTicket {
+  id                String    @id @default(cuid())
+  shopDomain        String
+  storeKey          String
+  tagNumber         Int
+  token             String    @unique // 免登录进度链接
+  status            String    @default("received") // received | in_progress | ready | picked_up | cancelled | on_hold
+  customerName      String
+  email             String?
+  phone             String?
+  shopifyCustomerId String?
+  memberId          String?
+  services          Json // [{key,name,qty}]
+  equipment         String? // ski | snowboard | boots | other
+  boardInfo         String?
+  edgeAngle         String?
+  heightCm          Int?
+  weightKg          Int?
+  din               String?
+  stanceFront       String?
+  stanceBack        String?
+  stanceWidth       String?
+  customerNotes     String?
+  staffNotes        String?
+  source            String    @default("qr") // qr | staff | order
+  consentSms        Boolean   @default(true)
+  consentEmail      Boolean   @default(true)
+  orderId           String?
+  orderName         String?
+  paid              Boolean   @default(false)
+  etaAt             DateTime? // 预计可取（给客人看的日期）
+  etaNote           String?
+  startedAt         DateTime?
+  readyAt           DateTime?
+  pickedUpAt        DateTime?
+  delayCount        Int       @default(0)
+  history           Json      @default("[]") // [{at,status,by,note}]
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  notifications ServiceNotification[]
+
+  @@index([shopDomain, storeKey, status, createdAt])
+  @@index([shopDomain, storeKey, tagNumber])
+  @@index([shopDomain, email])
+  @@index([shopDomain, phone])
+  @@index([shopifyCustomerId])
+}
+
+model ServiceNotification {
+  id        String   @id @default(cuid())
+  ticketId  String
+  kind      String // received | ready | delayed | reminder | custom
+  channel   String // klaviyo | log
+  toEmail   String?
+  toPhone   String?
+  payload   Json?
+  ok        Boolean  @default(false)
+  error     String?
+  createdBy String   @default("system")
+  createdAt DateTime @default(now())
+
+  ticket ServiceTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+
+  @@index([ticketId, createdAt])
+}

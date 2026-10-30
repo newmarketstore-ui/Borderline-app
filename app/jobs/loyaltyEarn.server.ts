@@ -29,6 +29,7 @@ import {
   type MemberWithMemberships,
 } from "../models/membership.server";
 import { markRedemptionUsed } from "../models/redemption.server";
+import { linkOrderToTickets } from "../models/services.server";
 import { enqueue, QUEUES } from "./queue.server";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -76,6 +77,22 @@ export async function handleEarn(event: WebhookEvent, deps: EarnDeps = defaultEa
 
   if (!order.customer) return `skipped: no customer on order${usedNote}`;
   const orderDate = order.processedAt ? new Date(order.processedAt) : new Date();
+
+  // 服务工单：按同店 + 同客人 + 24 小时自动把订单挂到工单上（只标已付款，不影响工单本身）
+  try {
+    const loc = payload.location_id ? `gid://shopify/Location/${payload.location_id}` : null;
+    await linkOrderToTickets(shop, {
+      orderGid: order.orderGid,
+      orderName: order.orderName,
+      email: order.customer.email,
+      phone: order.customer.phone,
+      customerGid: order.customer.gid,
+      locationId: loc,
+      at: orderDate,
+    });
+  } catch (e) {
+    console.warn("[services] order link failed:", (e as Error).message);
+  }
 
   // 商品类型 / 标签：REST 订单行不带，按需用 Admin API 补一次（排除规则、会员商品判断共用）
   let lines = order.earn.lines;

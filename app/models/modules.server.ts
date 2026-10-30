@@ -32,10 +32,10 @@ export const MODULES: ModuleDef[] = [
   {
     key: "service_tickets",
     name: "Service tickets (wax / tune)",
-    description: "Service orders become tickets with status and customer notifications. Not built yet.",
-    defaultEnabled: false,
-    available: false,
-    entry: null,
+    description: "Customers scan the store QR and register their board (tag number); tickets per store with status, pickup date and Klaviyo notifications.",
+    defaultEnabled: true,
+    available: true,
+    entry: "/app/services",
   },
   {
     key: "ai_support",

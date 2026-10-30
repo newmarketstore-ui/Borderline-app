@@ -13,6 +13,13 @@ export async function getMe() {
   return data;
 }
 
+export async function getServices() {
+  const res = await fetch(`${APP_URL}/api/account/services`, { headers: await authHeaders() });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data.tickets || [];
+}
+
 export async function redeem(points, idempotencyKey) {
   const res = await fetch(`${APP_URL}/api/account/redeem`, {
     method: "POST",

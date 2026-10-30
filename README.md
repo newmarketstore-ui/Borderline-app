@@ -113,6 +113,32 @@ Owner decisions 2026-10-29: the order that buys the membership earns at the paid
 
 Production migrations are applied by `npm run setup` (`prisma migrate deploy`) at container start; all loyalty migrations only add tables / columns.
 
+## Service tickets module
+
+Wax / tune / binding-mount work orders for the three stores (RH, Ottawa, Newmarket). Enabled per shop under **Modules**; shows up as **Services** in the app nav.
+
+### Flow
+
+1. Customer scans the store QR (`/app/services/qr`) → `/apps/loyalty-1/service/<rh|ott|nmk>` (App Proxy, `proxy.loyalty.service.$store.tsx`). The form asks for the physical tag number staff handed over (RH 1–2000, Ottawa 2001–4000, NMK 4001–5000), name, email or phone, services, equipment. Edge angle only appears when an edge service is picked; height/weight (DIN optional) only for ski binding work; stance only for snowboard binding work. No waiver here (customers sign the existing waiver QR afterwards).
+2. The ticket is created immediately (`createTicket`), tag reuse is blocked while another ticket on that tag is still in the store, and the customer gets a confirmation + "Service Received" Klaviyo event with a token status link (`/apps/loyalty-1/service/t/<token>`).
+3. Staff work the board at `/app/services` (store switcher, Not started / In progress / On hold / Ready tabs, search by tag / name / phone / order). Buttons move status; "Done, notify" sends "Service Ready". Ticket page has "Running late?" → pick a new date, optional message → "Service Delayed" event.
+4. Pickup estimate = queue ahead × tiers (`Settings`): default 0–1 ahead → today (tomorrow after 15:00), 2–10 → next day, >10 → two days; closed weekdays skipped. Customers see the concrete date on the status page, it refreshes as the queue moves.
+5. Orders are linked opportunistically: an `orders/paid` at the same location within ±24 h of a ticket for the same customer marks it paid (`linkOrderToTickets`). Linking is informational; the ticket never depends on the order.
+6. Pickup reminders: `loyalty.sweep` sends "Service Pickup Reminder" when a ticket has been ready for `SERVICE_REMINDER_DAYS` (default 3) days and none was sent in that window.
+7. Logged-in customers also see "My ski & snowboard services" on the Rewards page (`/api/account/services`).
+
+### Pieces
+
+- `app/lib/serviceRules.ts` — pure rules (seed catalogue from the 2026-10 poster, field requirements, tag ranges, ETA tiers, status machine). Unit tests in `serviceRules.test.ts`.
+- `app/models/services.server.ts` — Prisma access, ticket lifecycle, Klaviyo notifications (`notify`), order linking, reminders.
+- `app/lib/klaviyo.server.ts` — Events API client. Without `KLAVIYO_PRIVATE_KEY` events are logged (notification rows say `log`), nothing is sent.
+- `app/lib/serviceHtml.server.ts` — the mobile intake form / confirmation / status page served through the App Proxy (no theme dependency).
+- Admin routes: `app.services._index.tsx`, `app.services.$ticketId.tsx`, `app.services.settings.tsx`, `app.services.qr.tsx`.
+- Env: `KLAVIYO_PRIVATE_KEY`, `SERVICE_STATUS_BASE` (default `https://borderlinestore.ca/apps/loyalty-1`), `SERVICE_REMINDER_DAYS`.
+- Klaviyo metrics to build flows on: `Service Received`, `Service Ready`, `Service Delayed`, `Service Pickup Reminder`, `Service Message`. Event properties: `tag_number`, `store`, `store_address`, `store_hours`, `services`, `eta_date`, `status_url`, `customer_name`, plus `new_date` / `message` on delays.
+
+Member pricing is **not** computed here: POS sells the service listing and a native automatic discount (customer segment on the paid-member tag) applies 50 %.
+
 ## Shopify Dev MCP
 
 This template is configured with the Shopify Dev MCP. This instructs [Cursor](https://cursor.com/), [GitHub Copilot](https://github.com/features/copilot) and [Claude Code](https://claude.com/product/claude-code) and [Google Gemini CLI](https://github.com/google-gemini/gemini-cli) to use the Shopify Dev MCP.

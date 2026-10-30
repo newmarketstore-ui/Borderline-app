@@ -28,5 +28,11 @@
   "type_migrate": "Transferred",
   "type_signup_bonus": "Welcome bonus",
   "card_heading": "You have {{points}} points",
-  "card_link": "View rewards"
+  "card_link": "View rewards",
+  "services_heading": "My ski & snowboard services",
+  "services_empty": "No service drop-offs on record. Scan the QR code at the service counter next time you bring gear in.",
+  "service_ready": "Ready for pickup",
+  "service_picked_up": "Picked up {{date}}",
+  "service_eta": "{{status}} · estimated pickup {{date}} · {{ahead}} ahead of you",
+  "service_track": "Track this job"
 }
