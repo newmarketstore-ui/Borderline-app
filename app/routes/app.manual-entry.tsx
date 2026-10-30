@@ -4,6 +4,7 @@ import { useFetcher, useLoaderData, useNavigate } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { useAppBridge } from "@shopify/app-bridge-react";
 
+import { requireModule } from "../models/modules.server";
 import { authenticate } from "../shopify.server";
 import { CHANNELS, TRAFFIC_FACTORS } from "../lib/channels";
 import { torontoToday, torontoYesterday, isValidDate } from "../lib/dates";
@@ -22,6 +23,7 @@ const choiceValues = (e: Event) =>
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   // 在线 session 只用来认人 / 认店；读门店用店铺离线 token，不受当前员工后台权限影响
   const { session } = await authenticate.admin(request);
+  await requireModule(session.shop, "store_metrics");
   const { admin } = await getOfflineAdmin(session.shop);
 
   const url = new URL(request.url);
@@ -55,6 +57,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
+  await requireModule(session.shop, "store_metrics");
   const form = await request.formData();
 
   let input: ManualMetricInput;

@@ -2,6 +2,7 @@ import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { useLoaderData } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 
+import { requireModule } from "../models/modules.server";
 import { authenticate } from "../shopify.server";
 import { torontoToday } from "../lib/dates";
 import { listManualMetrics, rowToChannels } from "../models/manualMetrics.server";
@@ -22,6 +23,7 @@ function topChannel(channels: Record<string, number>): string {
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
+  await requireModule(session.shop, "store_metrics");
 
   const url = new URL(request.url);
   const days = Math.min(60, Math.max(1, Number(url.searchParams.get("days")) || 14));

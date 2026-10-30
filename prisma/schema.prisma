@@ -290,3 +290,16 @@ model WebhookEvent {
   @@index([status, receivedAt])
   @@index([shopDomain, topic, receivedAt])
 }
+
+// 应用模块开关（老板 2026-10-29：先只开会员积分，门店日报先关；以后打蜡工单 / AI 客服也走这里）
+model AppModule {
+  id         String   @id @default(cuid())
+  shopDomain String
+  key        String // loyalty | store_metrics | service_tickets | ai_support
+  enabled    Boolean  @default(false)
+  updatedBy  String?
+  updatedAt  DateTime @updatedAt
+  createdAt  DateTime @default(now())
+
+  @@unique([shopDomain, key])
+}

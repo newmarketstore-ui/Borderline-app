@@ -3,26 +3,29 @@ import { Outlet, useLoaderData, useRouteError } from "react-router";
 import { boundary } from "@shopify/shopify-app-react-router/server";
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
 
+import { getModules } from "../models/modules.server";
 import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
-
+  const { session } = await authenticate.admin(request);
+  const modules = await getModules(session.shop);
   // eslint-disable-next-line no-undef
-  return { apiKey: process.env.SHOPIFY_API_KEY || "" };
+  return { apiKey: process.env.SHOPIFY_API_KEY || "", enabled: modules.filter((m) => m.enabled).map((m) => m.key) };
 };
 
 export default function App() {
-  const { apiKey } = useLoaderData<typeof loader>();
+  const { apiKey, enabled } = useLoaderData<typeof loader>();
+  const on = (k: string) => (enabled as string[]).includes(k);
 
+  // 导航：只放开着的模块；积分是主项目，永远在。
   return (
     <AppProvider embedded apiKey={apiKey}>
       <s-app-nav>
-        <s-link href="/app">首页</s-link>
-        <s-link href="/app/manual-entry">每日录入</s-link>
-        <s-link href="/app/manual-history">历史记录</s-link>
-        <s-link href="/app/loyalty">Loyalty</s-link>
-        <s-link href="/app/loyalty/settings">Loyalty settings</s-link>
+        <s-link href="/app">Home</s-link>
+        {on("loyalty") && <s-link href="/app/loyalty">Members</s-link>}
+        {on("loyalty") && <s-link href="/app/loyalty/settings">Points rules</s-link>}
+        {on("store_metrics") && <s-link href="/app/store-report">Store daily report</s-link>}
+        <s-link href="/app/modules">Modules</s-link>
       </s-app-nav>
       <Outlet />
     </AppProvider>
