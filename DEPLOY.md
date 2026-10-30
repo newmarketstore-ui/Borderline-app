@@ -38,7 +38,7 @@
 
 ## 服务工单模块需要的环境变量（2026-10-30）
 
-- `KLAVIYO_PRIVATE_KEY`：Klaviyo 私钥（Settings → API keys，权限 Events: Write、Profiles: Write）。没配之前所有通知只记日志不发。
+- `KLAVIYO_PRIVATE_KEY`：Klaviyo 私钥（Settings → API keys，权限 Events: Write、Profiles: Write）。没配之前所有通知只记日志不发。**2026-10-30 已配**（本地副本在主仓库 `secrets/klaviyo_private_key.txt`，gitignored；加法 = `doctl apps spec get` → 加 SECRET 项 → `doctl apps update --spec`）。
 - `SERVICE_STATUS_BASE`：客人状态页前缀，默认 `https://borderlinestore.ca/apps/loyalty-1`，不用改。
 - `SERVICE_REMINDER_DAYS`：ready 几天没取发提醒，默认 3。
 - 加法：DO 控制台 → App → Settings → borderline-app → Environment Variables → Add（选 Encrypt）→ Save 会自动重新部署；或改 `.do/app.yaml` 后 `doctl apps update`。
