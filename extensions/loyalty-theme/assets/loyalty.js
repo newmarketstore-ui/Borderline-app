@@ -1,5 +1,5 @@
 /* Borderline Points · 主题 app block 共用脚本（商品页徽章 + 购物车积分条）。
-   只读两个 App Proxy 接口：/apps/loyalty/estimate（规则，可缓存）和 /apps/loyalty/me（登录顾客余额，不缓存）。 */
+   只读两个 App Proxy 接口：/apps/bl-points/estimate（规则，可缓存）和 /apps/bl-points/me（登录顾客余额，不缓存）。 */
 (function () {
   if (window.__blLoyaltyLoaded) return;
   window.__blLoyaltyLoaded = true;
@@ -18,7 +18,7 @@
   function estimate(cents) {
     var c = Math.max(0, parseInt(cents, 10) || 0);
     if (!estimateCache[c]) {
-      estimateCache[c] = fetch(base + "/apps/loyalty/estimate?cents=" + c, { credentials: "same-origin" }).then(function (r) {
+      estimateCache[c] = fetch(base + "/apps/bl-points/estimate?cents=" + c, { credentials: "same-origin" }).then(function (r) {
         return r.ok ? r.json() : null;
       });
     }
@@ -26,7 +26,7 @@
   }
   function me() {
     if (!mePromise) {
-      mePromise = fetch(base + "/apps/loyalty/me", { credentials: "same-origin", cache: "no-store" }).then(function (r) {
+      mePromise = fetch(base + "/apps/bl-points/me", { credentials: "same-origin", cache: "no-store" }).then(function (r) {
         return r.ok ? r.json() : { loggedIn: false };
       }).catch(function () { return { loggedIn: false }; });
     }

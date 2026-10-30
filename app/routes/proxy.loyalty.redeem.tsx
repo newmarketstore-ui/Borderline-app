@@ -1,4 +1,4 @@
-// 店面 App Proxy：POST /apps/loyalty/redeem  JSON { points, idempotencyKey } → 登录顾客本人兑 Store Credit
+// 店面 App Proxy：POST /apps/bl-points/redeem  JSON { points, idempotencyKey } → 登录顾客本人兑 Store Credit
 import type { ActionFunctionArgs } from "react-router";
 
 import { formatCents } from "../lib/redeemMath";

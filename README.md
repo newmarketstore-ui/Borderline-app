@@ -84,10 +84,10 @@ Owner rules (2026-10-29): every customer with a Shopify profile earns **1 pt per
 | Staff UI | `/app/loyalty`, `/app/loyalty/:memberId`, `/app/loyalty/settings` | Search, ledger, adjust, issue store credit / code, reverse, memberships, rules + windows editor. |
 | POS | `extensions/loyalty-pos` (smart-grid tile + modal, customer-details block, post-purchase block) → `/api/pos/*` | Tile shows the cart customer's balance. Two one-tap options, each switchable in *Loyalty → Settings → POS redeem options*: **convert to store credit** (staff then takes payment with *Store credit*) or **take $X off this cart** (a fixed-amount cart discount titled with the redemption code, no typing; if no paid order uses it within the hold time the points come back via the sweep, and if POS cannot apply it the extension calls `/api/pos/release` immediately). The post-purchase block records the order at once (no waiting for the webhook). Requires POS Pro (RH, Ottawa). |
 | Customer accounts | `extensions/loyalty-account` (full page `customer-account.page.render` + order-index card) → `/api/account/*` | New customer accounts only (this store uses them). |
-| Storefront | `extensions/loyalty-theme` (app blocks *Points badge*, *Points banner*) → App Proxy `/apps/loyalty/{estimate,me,redeem}` | Place the blocks in the theme editor; no theme code changes. |
+| Storefront | `extensions/loyalty-theme` (app blocks *Points badge*, *Points banner*) → App Proxy `/apps/bl-points/{estimate,me,redeem}` | Place the blocks in the theme editor; no theme code changes. |
 | Shared service | `app/models/loyaltyPublic.server.ts` | `ensureMember` (auto-enrol from Shopify), `memberSummary`, `estimatePoints`, `redeemForMember`. |
 
-Required scopes (see `shopify.app.toml`): `read_customers, write_customers, write_discounts, write_orders, read_store_credit_accounts, write_store_credit_account_transactions` plus the original read scopes. The App Proxy is `/apps/loyalty` → `/proxy/loyalty`.
+Required scopes (see `shopify.app.toml`): `read_customers, write_customers, write_discounts, write_orders, read_store_credit_accounts, write_store_credit_account_transactions` plus the original read scopes. The App Proxy is `/apps/bl-points` → `/proxy/loyalty`.
 
 ### Idempotency
 

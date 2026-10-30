@@ -1,4 +1,4 @@
-// 店面 App Proxy：GET /apps/loyalty/estimate?cents=12999 → 商品页 / 购物车「这单能赚 N 分」
+// 店面 App Proxy：GET /apps/bl-points/estimate?cents=12999 → 商品页 / 购物车「这单能赚 N 分」
 import type { LoaderFunctionArgs } from "react-router";
 
 import { estimatePoints } from "../models/loyaltyPublic.server";

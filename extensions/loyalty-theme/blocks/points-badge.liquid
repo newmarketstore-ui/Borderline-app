@@ -1,6 +1,6 @@
 {%- comment -%}
   商品页积分提示（主题 app block，放在价格附近）：
-  "Earn up to N points · paid members earn M"。价格按当前变体，从 /apps/loyalty/estimate 取规则（可缓存 5 分钟）。
+  "Earn up to N points · paid members earn M"。价格按当前变体，从 /apps/bl-points/estimate 取规则（可缓存 5 分钟）。
   不改 BL_winter 主题代码；在主题编辑器里把这个 block 拖进商品信息区即可。
 {%- endcomment -%}
 {%- assign price_cents = product.selected_or_first_available_variant.price -%}

@@ -52,10 +52,10 @@ api_version = "2026-04"
   uri = "/webhooks/shop/redact"
   compliance_topics = [ "shop/redact" ]
 
-# 店面 App Proxy：主题 / 顾客端 JS 调 https://<店>/apps/loyalty/* → 我们的 /proxy/loyalty/*（Shopify 签名 + logged_in_customer_id）
+# 店面 App Proxy：主题 / 顾客端 JS 调 https://<店>/apps/bl-points/* → 我们的 /proxy/loyalty/*（/apps/loyalty 被 Appstle 占用，10/29 实测 401）（Shopify 签名 + logged_in_customer_id）
 [app_proxy]
 url = "https://borderline-app-lntir.ondigitalocean.app/proxy/loyalty"
-subpath = "loyalty"
+subpath = "bl-points"
 prefix = "apps"
 
 [auth]

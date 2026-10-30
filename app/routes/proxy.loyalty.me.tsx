@@ -1,4 +1,4 @@
-// 店面 App Proxy：GET https://<店>/apps/loyalty/me → 这里 /proxy/loyalty/me
+// 店面 App Proxy：GET https://<店>/apps/bl-points/me → 这里 /proxy/loyalty/me
 // Shopify 校验签名并带上 logged_in_customer_id（没登录为空）。主题 app block（表头积分、购物车提示）用。
 import type { LoaderFunctionArgs } from "react-router";
 
