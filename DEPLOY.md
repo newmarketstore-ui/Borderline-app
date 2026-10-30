@@ -11,6 +11,12 @@
 5. 部署后在 Shopify 后台打开应用，点一次"更新权限"（新增 customers / discounts / store credit 写权限）。
 6. POS：RH、Ottawa 店员角色开"应用折扣"（折扣码兜底时用）；NMK 是 POS Lite，上不了 POS 扩展，兑分走后台应用页。
 
+## 状态（2026-10-29 晚）
+- DO 应用 `borderline-app`（tor，1× apps-s-1vcpu-2gb）已建并 ACTIVE：https://borderline-app-lntir.ondigitalocean.app（/healthz 200）。app id 存 `Ads automation/secrets/do_app_id.txt`。
+- 线上库 6 个迁移已跑、pgboss schema 已建（Supabase 项目曾被暂停 → 老板 10/29 恢复并升 Pro）。
+- Shopify 版本 borderlineai-10 已发布（新 scope / webhook / App Proxy / 三个扩展）。**待老板在后台打开应用点"更新权限"**，之后用测试单验收。
+- 教训：Dockerfile 不能 `npm ci --omit=optional`（rollup 平台二进制也是 optional）；主题 block 的 schema 默认值不能含 `{{ }}`；customer-account 全页 target 不能与其它 target 共存一个扩展；`shopify app deploy` 非交互要 `--no-input --allow-updates`。
+
 ## 部署步骤（我来）
 1. `.do/app.yaml` 里 `<GITHUB_REPO>` → `Borderline-app`；`doctl auth init --access-token-file secrets/digitalocean.token`。
 2. `doctl apps create --spec .do/app.yaml`，在控制台填三项 SECRET（SHOPIFY_API_SECRET / DATABASE_URL / MANUAL_METRICS_EXPORT_TOKEN）。首次构建会跑 `prisma migrate deploy`（只加表 / 加列，不动旧数据）。
