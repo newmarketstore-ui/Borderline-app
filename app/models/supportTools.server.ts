@@ -137,11 +137,11 @@ const SEARCH_QUERY = `#graphql
     }
   }`;
 
-const CARDS_QUERY = `#graphql
-  query SupportCards($q: String!) {
-    products(first: 8, query: $q) {
-      nodes { ${PRODUCT_FIELDS} featuredImage { url(transform: { maxWidth: 400 }) } }
-    }
+// Storefront 的 products(query:) 不认 handle:，所以按 handle 逐个取（最多 4 个，一次请求用别名）
+const cardsQuery = (n: number) => `#graphql
+  query SupportCards(${Array.from({ length: n }, (_, i) => `$h${i}: String!`).join(", ")}) {
+    ${Array.from({ length: n }, (_, i) => `p${i}: product(handle: $h${i}) { ${PRODUCT_FIELDS} featuredImage { url(transform: { maxWidth: 400 }) } }`).join("
+    ")}
   }`;
 
 const PRODUCT_QUERY = `#graphql
@@ -231,11 +231,11 @@ export type ProductCard = { handle: string; title: string; price: string; image:
 export async function productCards(shop: string, handles: string[]): Promise<ProductCard[]> {
   const hs = [...new Set(handles.map((h) => String(h).trim().replace(/^.*\/products\//, "").split(/[?#]/)[0]).filter(Boolean))].slice(0, 4);
   if (!hs.length) return [];
-  const data = await storefront<{ products: { nodes: Array<SfProduct & { featuredImage: { url: string } | null }> } }>(shop, CARDS_QUERY, { q: hs.map((h) => `handle:${h}`).join(" OR ") });
-  const byHandle = new Map(data.products.nodes.map((p) => [p.handle, p]));
+  type SfCard = SfProduct & { featuredImage: { url: string } | null };
+  const data = await storefront<Record<string, SfCard | null>>(shop, cardsQuery(hs.length), Object.fromEntries(hs.map((h, i) => [`h${i}`, h])));
   return hs
-    .map((h) => byHandle.get(h))
-    .filter((p): p is SfProduct & { featuredImage: { url: string } | null } => Boolean(p))
+    .map((_, i) => data[`p${i}`])
+    .filter((p): p is SfCard => Boolean(p))
     .map((p) => ({ handle: p.handle, title: p.title, price: priceLabel(p), image: p.featuredImage?.url ?? null, url: p.onlineStoreUrl ?? `https://borderlinestore.ca/products/${p.handle}`, available: p.availableForSale, brand: p.vendor }));
 }
 
