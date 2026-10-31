@@ -140,8 +140,7 @@ const SEARCH_QUERY = `#graphql
 // Storefront 的 products(query:) 不认 handle:，所以按 handle 逐个取（最多 4 个，一次请求用别名）
 const cardsQuery = (n: number) => `#graphql
   query SupportCards(${Array.from({ length: n }, (_, i) => `$h${i}: String!`).join(", ")}) {
-    ${Array.from({ length: n }, (_, i) => `p${i}: product(handle: $h${i}) { ${PRODUCT_FIELDS} featuredImage { url(transform: { maxWidth: 400 }) } }`).join("
-    ")}
+    ${Array.from({ length: n }, (_, i) => `p${i}: product(handle: $h${i}) { ${PRODUCT_FIELDS} featuredImage { url(transform: { maxWidth: 400 }) } }`).join("\n    ")}
   }`;
 
 const PRODUCT_QUERY = `#graphql
