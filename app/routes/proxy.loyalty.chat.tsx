@@ -40,7 +40,7 @@ function publicView(c: SupportConversation & { messages: SupportMessage[] }) {
     locale: c.locale,
     messages: c.messages
       .filter((m) => m.role !== "system")
-      .map((m) => ({ role: m.role, content: m.content, at: m.createdAt.toISOString() })),
+      .map((m) => ({ role: m.role, content: m.content, at: m.createdAt.toISOString(), cards: (m.meta as { cards?: unknown[] } | null)?.cards ?? [] })),
   };
 }
 
@@ -130,14 +130,14 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         model: r.model,
         usage: r.usage,
         latencyMs: r.latencyMs,
-        meta: { tools: r.tools, stop: r.stop } as never,
+        meta: { tools: r.tools, stop: r.stop, cards: r.cards } as never,
       }),
       recordUsage(shop, r.usage),
     ]);
     const fresh = await prisma.supportConversation.findUnique({ where: { id: conversation.id } });
     const contactKnown = Boolean(fresh?.email || fresh?.phone);
     if (r.handoff && contactKnown) notifyHandoff(shop, conversation.id).catch((e) => console.warn("[support] handoff notify failed:", (e as Error).message));
-    return json({ conversationId: conversation.id, mode: "ok", reply: r.text, status: fresh?.status ?? conversation.status, contactKnown, needsContact: r.handoff && !contactKnown });
+    return json({ conversationId: conversation.id, mode: "ok", reply: r.text, cards: r.cards, status: fresh?.status ?? conversation.status, contactKnown, needsContact: r.handoff && !contactKnown });
   } catch (e) {
     console.error("[support] turn failed:", (e as Error).message);
     await appendMessage(conversation.id, { role: "system", content: `assistant error: ${(e as Error).message}`.slice(0, 500) });

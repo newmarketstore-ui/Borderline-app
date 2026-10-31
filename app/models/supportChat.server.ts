@@ -4,7 +4,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { knowledgeBasePrompt, SUPPORT_RULES_PROMPT, turnContextText, type TurnContext } from "../lib/supportPrompt";
 import { UI_TEXT, type SupportLocale, type UsageLike } from "../lib/supportRules";
 import { getSupportConfig, listKb, type SupportConversation, type SupportMessage } from "./support.server";
-import { runTool, SUPPORT_TOOLS, type ToolContext, type ToolRun } from "./supportTools.server";
+import { runTool, SUPPORT_TOOLS, type ProductCard, type ToolContext, type ToolRun } from "./supportTools.server";
 
 const MAX_TOOL_ROUNDS = 6;
 const MAX_HISTORY = 30; // 条消息
@@ -26,6 +26,7 @@ export type TurnResult = {
   usage: UsageLike;
   model: string;
   tools: ToolRun[];
+  cards: ProductCard[];
   stop: string;
   handoff: boolean;
   latencyMs: number;
@@ -89,6 +90,7 @@ export async function runAssistantTurn(p: {
 
   let usage: UsageLike = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
   const tools: ToolRun[] = [];
+  let cards: ProductCard[] = [];
   let handoff = false;
   let stop = "";
   let text = "";
@@ -128,6 +130,7 @@ export async function runAssistantTurn(p: {
           handoff = true;
           toolCtx.contactKnown = contactKnown;
         }
+        if (tu.name === "show_products" && out && typeof out === "object" && Array.isArray((out as { cards?: ProductCard[] }).cards)) cards = (out as { cards: ProductCard[] }).cards;
       } catch (e) {
         ok = false;
         out = { error: `Tool failed: ${(e as Error).message}. Tell the customer you could not check this right now and offer to hand off to staff.` };
@@ -140,5 +143,5 @@ export async function runAssistantTurn(p: {
   }
 
   if (!text) text = UI_TEXT[p.locale].error;
-  return { text, usage, model, tools, stop, handoff, latencyMs: Date.now() - t0 };
+  return { text, usage, model, tools, cards, stop, handoff, latencyMs: Date.now() - t0 };
 }

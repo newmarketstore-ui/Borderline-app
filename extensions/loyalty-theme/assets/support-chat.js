@@ -20,12 +20,12 @@
       sub: "Usually answers in a few seconds", offline: "Our assistant is taking a break. Leave your question and a way to reach you — a staff member will reply by email.",
       contactTitle: "Leave your contact so staff can reply", name: "Name (optional)", email: "Email", phone: "Phone (optional)", submit: "Send to staff",
       need: "Enter an email or phone number", thanks: "Thanks — your question is with our team. We reply by email during store hours.",
-      err: "Sorry, something went wrong. Please try again or leave your contact below.", foot: "AI assistant · may make mistakes · staff can take over any time", person: "Talk to a person" },
+      err: "Sorry, something went wrong. Please try again or leave your contact below.", soldout: "sold out", foot: "AI assistant · may make mistakes · staff can take over any time", person: "Talk to a person" },
     fr: { open: "Question ?", placeholder: "Écrivez votre question…", send: "Envoyer", close: "Fermer", staff: "Équipe du magasin", you: "Vous",
       sub: "Répond généralement en quelques secondes", offline: "Notre assistant fait une pause. Laissez votre question et un moyen de vous joindre — un membre de l’équipe vous répondra par courriel.",
       contactTitle: "Laissez vos coordonnées pour que l’équipe vous réponde", name: "Nom (facultatif)", email: "Courriel", phone: "Téléphone (facultatif)", submit: "Envoyer à l’équipe",
       need: "Entrez un courriel ou un numéro de téléphone", thanks: "Merci — votre question est transmise à notre équipe. Nous répondons par courriel pendant les heures d’ouverture.",
-      err: "Désolé, une erreur s’est produite. Réessayez ou laissez vos coordonnées ci-dessous.", foot: "Assistant IA · peut se tromper · l’équipe peut prendre le relais", person: "Parler à quelqu’un" }
+      err: "Désolé, une erreur s’est produite. Réessayez ou laissez vos coordonnées ci-dessous.", soldout: "épuisé", foot: "Assistant IA · peut se tromper · l’équipe peut prendre le relais", person: "Parler à quelqu’un" }
   }[locale];
   var title = (locale === "fr" ? root.getAttribute("data-title-fr") : root.getAttribute("data-title")) || "Ask Borderline";
   var greeting = (locale === "fr" ? root.getAttribute("data-greeting-fr") : root.getAttribute("data-greeting")) || "";
@@ -69,10 +69,21 @@
     root.appendChild(panel);
   }
 
-  function add(role, text) {
+  function add(role, text, cards) {
     var m = el("div", { class: "blsc__msg blsc__msg--" + role, "data-label": role === "staff" ? T.staff : null });
     m.innerHTML = role === "user" ? esc(text) : linkify(text);
-    log.appendChild(m); log.scrollTop = log.scrollHeight; return m;
+    log.appendChild(m);
+    if (cards && cards.length) {
+      var row = el("div", { class: "blsc__cards" });
+      cards.forEach(function (c) {
+        var a = el("a", { class: "blsc__card", href: c.url, target: "_blank", rel: "noopener" });
+        a.innerHTML = (c.image ? '<img src="' + esc(c.image) + '" alt="" loading="lazy">' : '<span class="blsc__card-noimg"></span>') +
+          '<span class="blsc__card-body"><b>' + esc(c.title) + '</b><span>' + esc(c.price) + (c.available === false ? " · " + esc(T.soldout) : "") + '</span></span>';
+        row.appendChild(a);
+      });
+      log.appendChild(row);
+    }
+    log.scrollTop = log.scrollHeight; return m;
   }
   var typingEl = null;
   function typing(on) { if (on && !typingEl) { typingEl = el("div", { class: "blsc__typing" }); typingEl.innerHTML = "<i></i><i></i><i></i>"; log.appendChild(typingEl); log.scrollTop = log.scrollHeight; } if (!on && typingEl) { typingEl.remove(); typingEl = null; } }
@@ -112,7 +123,7 @@
         typing(false);
         if (!r || r.error) { add("assistant", T.err); showContact(); return; }
         if (r.conversationId) setConversation(r.conversationId);
-        add("assistant", r.reply || T.err);
+        add("assistant", r.reply || T.err, r.cards);
         if (r.mode === "offline" || r.mode === "error" || r.needsContact) showContact(r.mode === "offline" ? null : undefined);
       })
       .catch(function () { typing(false); add("assistant", T.err); showContact(); })
@@ -127,7 +138,7 @@
       if (resumeToken && d.conversationId) { /* 邮件链接打开的会话：这台设备可能不是原访客，只读显示，继续聊会开新会话 */ }
       else if (d.conversationId) setConversation(d.conversationId);
       if (greeting) add("assistant", greeting);
-      d.messages.forEach(function (m) { if (m.role === "user" || m.role === "assistant" || m.role === "staff") add(m.role, m.content); });
+      d.messages.forEach(function (m) { if (m.role === "user" || m.role === "assistant" || m.role === "staff") add(m.role, m.content, m.cards); });
       if (chipsEl && d.messages.length) chipsEl.hidden = true;
     }).catch(function () { if (greeting) add("assistant", greeting); });
   }

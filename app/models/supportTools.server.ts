@@ -24,14 +24,27 @@ export const SUPPORT_TOOLS: Anthropic.Tool[] = [
   {
     name: "search_products",
     description:
-      "Search the online catalogue by keywords (brand, model, category, 'ski jacket women', 'snowboard 155'). Returns up to 6 matching products with price range, availability and handle. Call get_product for details or store stock.",
+      "Search the online catalogue. Use keywords for brand / model / category ('snow pants', 'ski jacket women', 'snowboard 155') and filters for colour, type and price. Returns up to 10 products with price, availability, sizes in stock and image. For a colour request ALWAYS set color_family instead of putting the colour in the query (colour names live in option values, not titles). Call get_product for details or per-store stock.",
     input_schema: {
       type: "object",
       properties: {
-        query: { type: "string", description: "Search words, in English where possible" },
+        query: { type: "string", description: "Search words (category / brand / model), in English; leave the colour out" },
+        color_family: { type: "string", enum: ["black", "blue", "gray", "white", "green", "pink", "red", "purple", "brown", "multicolor", "orange", "yellow", "beige", "silver", "navy", "gold"], description: "Colour family the customer asked for" },
+        product_type: { type: "string", description: "Exact Shopify product type when known, e.g. 'Snow Pants', 'Snow Jacket', 'Snow Bib', 'Mid Layers', 'Base Layers', 'Ski Board', 'Snowboard', 'Ski Boot', 'Snowboard Boot', 'Helmet', 'Goggles'" },
+        max_price: { type: "number", description: "CAD upper limit" },
         in_stock_only: { type: "boolean", description: "Default true" },
       },
       required: ["query"],
+    },
+  },
+  {
+    name: "show_products",
+    description:
+      "Show product cards (image, title, price, link) in the chat window for up to 4 products you are recommending. Call it after you have decided which products to suggest, then describe them briefly in text. Use the handles from search_products / get_product.",
+    input_schema: {
+      type: "object",
+      properties: { handles: { type: "array", items: { type: "string" }, maxItems: 4 } },
+      required: ["handles"],
     },
   },
   {
@@ -115,8 +128,18 @@ const PRODUCT_FIELDS = `
 
 const SEARCH_QUERY = `#graphql
   query SupportSearch($q: String!, $filters: [ProductFilter!]) {
-    search(query: $q, first: 6, types: [PRODUCT], productFilters: $filters) {
-      nodes { ... on Product { ${PRODUCT_FIELDS} } }
+    search(query: $q, first: 10, types: [PRODUCT], productFilters: $filters) {
+      nodes { ... on Product { ${PRODUCT_FIELDS}
+        featuredImage { url(transform: { maxWidth: 400 }) }
+        variants(first: 60) { nodes { title availableForSale } }
+      } }
+    }
+  }`;
+
+const CARDS_QUERY = `#graphql
+  query SupportCards($q: String!) {
+    products(first: 8, query: $q) {
+      nodes { ${PRODUCT_FIELDS} featuredImage { url(transform: { maxWidth: 400 }) } }
     }
   }`;
 
@@ -170,11 +193,19 @@ function storeNameByLocation(stores: Array<{ key: string; name: string; shopifyL
   return map;
 }
 
-async function searchProducts(shop: string, input: { query: string; in_stock_only?: boolean }) {
-  const filters = input.in_stock_only === false ? [] : [{ available: true }];
-  const data = await storefront<{ search: { nodes: SfProduct[] } }>(shop, SEARCH_QUERY, { q: input.query, filters });
-  const items = data.search.nodes.filter((n) => n && n.handle);
-  if (!items.length) return { results: [], note: "No products matched. Try different words or hand off to staff." };
+type SfSearchProduct = SfProduct & { featuredImage: { url: string } | null; variants: { nodes: Array<{ title: string; availableForSale: boolean }> } };
+
+async function searchProducts(shop: string, input: { query: string; color_family?: string; product_type?: string; max_price?: number; in_stock_only?: boolean }) {
+  const filters: Array<Record<string, unknown>> = input.in_stock_only === false ? [] : [{ available: true }];
+  if (input.color_family) filters.push({ tag: `color-${input.color_family.toLowerCase().replace(/\s+/g, "-")}` });
+  if (input.product_type) filters.push({ productType: input.product_type });
+  if (input.max_price && input.max_price > 0) filters.push({ price: { max: input.max_price } });
+  const q = input.query?.trim() || input.product_type || "*";
+  const run = async (query: string) => (await storefront<{ search: { nodes: SfSearchProduct[] } }>(shop, SEARCH_QUERY, { q: query, filters })).search.nodes.filter((n) => n && n.handle);
+  let items = await run(q);
+  // 关键词太窄（比如 "pants" 对不上 "Snow Pants" 标题）时，换更宽的词只靠筛选再搜一次
+  if (!items.length && (input.color_family || input.product_type)) items = await run(input.product_type ?? q.split(/\s+/).pop() ?? q);
+  if (!items.length) return { results: [], note: "No products matched. Try broader words, drop a filter, or hand off to staff." };
   return {
     results: items.map((p) => ({
       title: p.title,
@@ -183,9 +214,26 @@ async function searchProducts(shop: string, input: { query: string; in_stock_onl
       type: p.productType,
       price: priceLabel(p),
       available_online: p.availableForSale,
+      sizes_in_stock: p.variants.nodes.filter((v) => v.availableForSale).map((v) => v.title).slice(0, 12),
+      image: p.featuredImage?.url ?? null,
       url: p.onlineStoreUrl ?? `https://borderlinestore.ca/products/${p.handle}`,
     })),
+    note: input.color_family ? `Filtered by colour family "${input.color_family}".` : undefined,
   };
+}
+
+export type ProductCard = { handle: string; title: string; price: string; image: string | null; url: string; available: boolean; brand: string };
+
+/** 给聊天窗渲染的商品卡（按 handle 取）。 */
+export async function productCards(shop: string, handles: string[]): Promise<ProductCard[]> {
+  const hs = [...new Set(handles.map((h) => String(h).trim().replace(/^.*\/products\//, "").split(/[?#]/)[0]).filter(Boolean))].slice(0, 4);
+  if (!hs.length) return [];
+  const data = await storefront<{ products: { nodes: Array<SfProduct & { featuredImage: { url: string } | null }> } }>(shop, CARDS_QUERY, { q: hs.map((h) => `handle:${h}`).join(" OR ") });
+  const byHandle = new Map(data.products.nodes.map((p) => [p.handle, p]));
+  return hs
+    .map((h) => byHandle.get(h))
+    .filter((p): p is SfProduct & { featuredImage: { url: string } | null } => Boolean(p))
+    .map((p) => ({ handle: p.handle, title: p.title, price: priceLabel(p), image: p.featuredImage?.url ?? null, url: p.onlineStoreUrl ?? `https://borderlinestore.ca/products/${p.handle}`, available: p.availableForSale, brand: p.vendor }));
 }
 
 function parseJsonish(v: string | null | undefined): unknown {
@@ -397,7 +445,11 @@ async function requestHuman(ctx: ToolContext, input: { reason: string; summary: 
 export async function runTool(ctx: ToolContext, name: string, input: Record<string, unknown>): Promise<unknown> {
   switch (name) {
     case "search_products":
-      return searchProducts(ctx.shop, input as { query: string; in_stock_only?: boolean });
+      return searchProducts(ctx.shop, input as Parameters<typeof searchProducts>[1]);
+    case "show_products": {
+      const cards = await productCards(ctx.shop, ((input as { handles?: unknown }).handles as string[]) ?? []);
+      return { shown: cards.map((c) => c.handle), cards, note: cards.length ? "Cards are now visible to the customer; describe them briefly, do not repeat prices already on the cards." : "No valid handles." };
+    }
     case "get_product":
       return getProduct(ctx.shop, input as { handle: string });
     case "get_order_status":
