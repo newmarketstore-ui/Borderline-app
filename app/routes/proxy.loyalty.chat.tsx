@@ -109,6 +109,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (!gate.ok) {
     const mode = gate.reason === "visitor" || gate.reason === "ip" ? "limited" : gate.reason === "turns" ? "limited" : "offline";
     const reply = gate.reason === "turns" ? t.rate_turns : mode === "limited" ? t.rate_visitor : t.offline;
+    // 离线 / 限速的回复也存一条，客人回来重开窗口时对得上
+    await appendMessage(conversation.id, { role: "assistant", content: reply, meta: { mode, reason: gate.reason } as never });
     return json({ conversationId: conversation.id, mode, reply, status: conversation.status, contactKnown: Boolean(conversation.email || conversation.phone), needsContact: !(conversation.email || conversation.phone) });
   }
 
