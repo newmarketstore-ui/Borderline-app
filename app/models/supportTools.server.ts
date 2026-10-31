@@ -32,6 +32,7 @@ export const SUPPORT_TOOLS: Anthropic.Tool[] = [
         color_family: { type: "string", enum: ["black", "blue", "gray", "white", "green", "pink", "red", "purple", "brown", "multicolor", "orange", "yellow", "beige", "silver", "navy", "gold"], description: "Colour family the customer asked for" },
         product_type: { type: "string", description: "Exact Shopify product type when known, e.g. 'Snow Pants', 'Snow Jacket', 'Snow Bib', 'Mid Layers', 'Base Layers', 'Ski Board', 'Snowboard', 'Ski Boot', 'Snowboard Boot', 'Helmet', 'Goggles'" },
         max_price: { type: "number", description: "CAD upper limit" },
+        size: { type: "string", description: "Size the customer needs (e.g. M, L, 10.5, 165) — only products with that size in stock are returned" },
         in_stock_only: { type: "boolean", description: "Default true" },
       },
       required: ["query"],
@@ -128,7 +129,7 @@ const PRODUCT_FIELDS = `
 
 const SEARCH_QUERY = `#graphql
   query SupportSearch($q: String!, $filters: [ProductFilter!]) {
-    search(query: $q, first: 10, types: [PRODUCT], productFilters: $filters) {
+    search(query: $q, first: 20, types: [PRODUCT], productFilters: $filters) {
       nodes { ... on Product { ${PRODUCT_FIELDS}
         featuredImage { url(transform: { maxWidth: 400 }) }
         variants(first: 60) { nodes { title availableForSale } }
@@ -195,8 +196,9 @@ function storeNameByLocation(stores: Array<{ key: string; name: string; shopifyL
 
 type SfSearchProduct = SfProduct & { featuredImage: { url: string } | null; variants: { nodes: Array<{ title: string; availableForSale: boolean }> } };
 
-async function searchProducts(shop: string, input: { query: string; color_family?: string; product_type?: string; max_price?: number; in_stock_only?: boolean }) {
+async function searchProducts(shop: string, input: { query: string; color_family?: string; product_type?: string; max_price?: number; size?: string; in_stock_only?: boolean }) {
   const filters: Array<Record<string, unknown>> = input.in_stock_only === false ? [] : [{ available: true }];
+  if (input.size?.trim()) filters.push({ variantOption: { name: "Size", value: input.size.trim() } });
   if (input.color_family) filters.push({ tag: `color-${input.color_family.toLowerCase().replace(/\s+/g, "-")}` });
   if (input.product_type) filters.push({ productType: input.product_type });
   if (input.max_price && input.max_price > 0) filters.push({ price: { max: input.max_price } });
@@ -218,7 +220,8 @@ async function searchProducts(shop: string, input: { query: string; color_family
       image: p.featuredImage?.url ?? null,
       url: p.onlineStoreUrl ?? `https://borderlinestore.ca/products/${p.handle}`,
     })),
-    note: input.color_family ? `Filtered by colour family "${input.color_family}".` : undefined,
+    total_shown: items.length,
+    note: [input.color_family ? `Filtered by colour family "${input.color_family}".` : null, input.size ? `Only products with size ${input.size} in stock.` : null, items.length >= 20 ? "More results exist; narrow with product_type / max_price." : null].filter(Boolean).join(" ") || undefined,
   };
 }
 

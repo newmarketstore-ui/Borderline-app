@@ -4,7 +4,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import { knowledgeBasePrompt, SUPPORT_RULES_PROMPT, turnContextText, type TurnContext } from "../lib/supportPrompt";
 import { UI_TEXT, type SupportLocale, type UsageLike } from "../lib/supportRules";
 import { getSupportConfig, listKb, type SupportConversation, type SupportMessage } from "./support.server";
-import { runTool, SUPPORT_TOOLS, type ProductCard, type ToolContext, type ToolRun } from "./supportTools.server";
+import { productCards, runTool, SUPPORT_TOOLS, type ProductCard, type ToolContext, type ToolRun } from "./supportTools.server";
 
 const MAX_TOOL_ROUNDS = 6;
 const MAX_HISTORY = 30; // 条消息
@@ -143,5 +143,22 @@ export async function runAssistantTurn(p: {
   }
 
   if (!text) text = UI_TEXT[p.locale].error;
+  // 模型没调 show_products 但回复里点名了商品链接 → 服务端自动出卡片，并把裸链接从文字里拿掉（卡片本身可点）
+  if (!cards.length) {
+    const handles = [...text.matchAll(/borderlinestore\.ca\/products\/([a-z0-9-]+)/gi)].map((m) => m[1]);
+    if (handles.length) {
+      try {
+        cards = await productCards(p.shop, handles.slice(0, 4));
+      } catch (e) {
+        console.warn("[support] auto cards failed:", (e as Error).message);
+      }
+    }
+  }
+  if (cards.length) {
+    text = text
+      .replace(/\s*[:：]?\s*\(?https?:\/\/(www\.)?borderlinestore\.ca\/products\/[a-z0-9-]+\)?/gi, "")
+      .replace(/[ \t]+\n/g, "\n")
+      .trim();
+  }
   return { text, usage, model, tools, cards, stop, handoff, latencyMs: Date.now() - t0 };
 }
