@@ -25,6 +25,7 @@ export default function App() {
         {on("loyalty") && <s-link href="/app/loyalty">Members</s-link>}
         {on("loyalty") && <s-link href="/app/loyalty/settings">Points rules</s-link>}
         {on("service_tickets") && <s-link href="/app/services">Services</s-link>}
+        {on("ai_support") && <s-link href="/app/support">Support chat</s-link>}
         {on("store_metrics") && <s-link href="/app/store-report">Store daily report</s-link>}
         <s-link href="/app/modules">Modules</s-link>
       </s-app-nav>

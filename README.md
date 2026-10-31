@@ -305,3 +305,16 @@ Shopify:
 Internationalization:
 
 - [Internationalizing your app](https://shopify.dev/docs/apps/best-practices/internationalization/getting-started)
+
+## AI support chat module (2026-10-31)
+
+Storefront chat answered by Claude Sonnet with read-only tools; hand-offs land in the app for staff to answer by email. Owner rules (10/31): Sonnet only, English + French, staff reply from the dashboard by email or SMS.
+
+- **Storefront**: theme app embed `extensions/loyalty-theme/blocks/support-chat.liquid` (+ `assets/support-chat.js/.css`). Turn it on in the theme editor → App embeds → *Support chat*. On product pages it passes the handle so "is this in stock?" works without naming the product; logged-in customers are recognised through the App Proxy.
+- **Endpoints** (App Proxy, Shopify-signed): `POST /apps/loyalty-1/chat` (`proxy.loyalty.chat.tsx`), `POST /apps/loyalty-1/chat/handoff`, `GET /apps/loyalty-1/chat?visitor=&conversation=` or `?token=` (resume link from the reply email).
+- **Model loop**: `app/models/supportChat.server.ts` — manual tool loop, `claude-sonnet-5-5`, effort low, max 6 tool rounds, knowledge base in a 1-hour cached system block. Tools in `supportTools.server.ts`: `search_products` / `get_product` (Storefront API with `STOREFRONT_PUBLIC_TOKEN`, per-store stock from `storeAvailability`), `get_order_status` (offline Admin; guests need order number + matching email), `get_service_tickets`, `get_points_balance` (logged-in only), `request_human`.
+- **Admin**: `/app/support` (conversations; default view = needs staff reply), `/app/support/<id>` (transcript with tool calls, reply by email/SMS/record-only, close, flag wrong answer), `/app/support/kb` (knowledge base docs; *Add missing defaults* seeds `supportKbSeed.ts` + stores/official policies from Shopify), `/app/support/settings` (on/off, daily USD budget, per-visitor / per-IP hourly limits, staff notification emails, greeting, extra rules).
+- **Guardrails**: facts only from tools/KB (system prompt), personal data only for logged-in or order+email verified, per-visitor and per-IP hourly limits, max turns per conversation, daily budget → offline message + contact form, every reply logs tool calls and token cost (`SupportMessage.meta`, `SupportUsageDay`).
+- **Notifications** (Klaviyo events → Flows, see `scripts/klaviyo_support_flows_2026_10_31.py` in the main repo): `Support Handoff` to each staff email in Settings (question, summary, transcript, admin link); `Support Reply` to the customer (reply text + link that reopens the chat).
+- **Env**: `ANTHROPIC_API_KEY` (required; without it the chat only collects questions), `STOREFRONT_PUBLIC_TOKEN` (same token the winter theme uses), optional `APP_ADMIN_URL`, `STOREFRONT_BASE`, `SUPPORT_SMS_ENABLED=1` once Klaviyo SMS is live.
+- Tests: `app/lib/supportRules.test.ts`. Tables: `SupportConfig`, `SupportKbDoc`, `SupportConversation`, `SupportMessage`, `SupportUsageDay` (migration `20261031120000_ai_support`).

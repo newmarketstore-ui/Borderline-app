@@ -1,0 +1,48 @@
+{%- comment -%}
+  AI 客服聊天窗（主题 app embed，挂在 body 上，所有页面都有）。
+  主题编辑器 → App embeds → "Support chat" 打开即生效；不改 BL_winter 主题代码。
+  商品页把 handle 带给后端，客人说"这个"就知道在问哪款；登录顾客由 App Proxy 自动识别。
+{%- endcomment -%}
+{%- if block.settings.enabled -%}
+{%- assign loc = request.locale.iso_code | downcase -%}
+<div
+  id="bl-support-chat"
+  data-proxy="{{ block.settings.proxy_path | default: '/apps/loyalty-1' | escape }}"
+  data-locale="{{ loc | escape }}"
+  data-product="{% if request.page_type == 'product' and product %}{{ product.handle | escape }}{% endif %}"
+  data-logged-in="{% if customer %}1{% else %}0{% endif %}"
+  data-position="{{ block.settings.position }}"
+  data-accent="{{ block.settings.accent }}"
+  data-title="{{ block.settings.title | escape }}"
+  data-title-fr="{{ block.settings.title_fr | escape }}"
+  data-greeting="{{ block.settings.greeting | escape }}"
+  data-greeting-fr="{{ block.settings.greeting_fr | escape }}"
+  data-chips="{{ block.settings.chips | escape }}"
+  data-chips-fr="{{ block.settings.chips_fr | escape }}"
+  data-hide-mobile="{% if block.settings.hide_mobile %}1{% else %}0{% endif %}"
+  hidden
+></div>
+<link rel="stylesheet" href="{{ 'support-chat.css' | asset_url }}" media="print" onload="this.media='all'">
+<noscript><link rel="stylesheet" href="{{ 'support-chat.css' | asset_url }}"></noscript>
+<script src="{{ 'support-chat.js' | asset_url }}" defer></script>
+{%- endif -%}
+
+{% schema %}
+{
+  "name": "Support chat",
+  "target": "body",
+  "settings": [
+    { "type": "checkbox", "id": "enabled", "label": "Show the chat bubble", "default": true },
+    { "type": "text", "id": "proxy_path", "label": "App proxy path", "default": "/apps/loyalty-1", "info": "Shopify admin → Apps → BorderlineAI shows the real path." },
+    { "type": "select", "id": "position", "label": "Position", "default": "right", "options": [ { "value": "right", "label": "Bottom right" }, { "value": "left", "label": "Bottom left" } ] },
+    { "type": "color", "id": "accent", "label": "Accent colour", "default": "#202321" },
+    { "type": "checkbox", "id": "hide_mobile", "label": "Hide on phones", "default": false },
+    { "type": "text", "id": "title", "label": "Title (EN)", "default": "Ask Borderline" },
+    { "type": "text", "id": "title_fr", "label": "Title (FR)", "default": "Demandez à Borderline" },
+    { "type": "textarea", "id": "greeting", "label": "Greeting (EN)", "default": "Hi! Ask me about sizing, what’s in stock at our stores, shipping, returns, your order or your tuning ticket." },
+    { "type": "textarea", "id": "greeting_fr", "label": "Greeting (FR)", "default": "Bonjour ! Posez-moi vos questions sur les tailles, le stock en magasin, la livraison, les retours, votre commande ou votre billet d’atelier." },
+    { "type": "text", "id": "chips", "label": "Quick questions (EN, separate with |)", "default": "Is this in stock near me?|Shipping & returns|Track my order|My ski service|Talk to a person" },
+    { "type": "text", "id": "chips_fr", "label": "Quick questions (FR, separate with |)", "default": "En stock près de chez moi ?|Livraison et retours|Suivre ma commande|Mon service d’atelier|Parler à quelqu’un" }
+  ]
+}
+{% endschema %}

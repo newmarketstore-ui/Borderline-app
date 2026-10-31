@@ -40,10 +40,10 @@ export const MODULES: ModuleDef[] = [
   {
     key: "ai_support",
     name: "AI customer support",
-    description: "Storefront chat answering stock, policy, order and points questions. Not built yet.",
-    defaultEnabled: false,
-    available: false,
-    entry: null,
+    description: "Storefront chat (Claude Sonnet, EN/FR) answering stock, sizing, policy, order, service-ticket and points questions; hand-offs land in the Support dashboard for staff to reply by email.",
+    defaultEnabled: true,
+    available: true,
+    entry: "/app/support",
   },
 ];
 
