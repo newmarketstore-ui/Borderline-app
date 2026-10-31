@@ -58,7 +58,7 @@ const LOCATIONS_QUERY = `#graphql
     locations(first: 10, query: "active:true") {
       nodes { id name address { address1 address2 city provinceCode zip phone } }
     }
-    shop { shippingPolicy { body } refundPolicy { body } }
+    shop { shopPolicies { type body } }
   }`;
 
 function stripHtml(html: string | null | undefined): string {
@@ -98,7 +98,7 @@ export async function seedKb(shop: string, admin: AdminGraphql | null, by: strin
     try {
       const data = await gql<{
         locations: { nodes: Array<{ id: string; name: string; address: { address1: string | null; address2: string | null; city: string | null; provinceCode: string | null; zip: string | null; phone: string | null } }> };
-        shop: { shippingPolicy: { body: string } | null; refundPolicy: { body: string } | null };
+        shop: { shopPolicies: Array<{ type: string; body: string }> };
       }>(admin, LOCATIONS_QUERY);
       const stores = await prisma.serviceStore.findMany({ where: { shopDomain: shop } });
       const lines = data.locations.nodes
@@ -117,8 +117,9 @@ export async function seedKb(shop: string, admin: AdminGraphql | null, by: strin
         5,
         `${lines.join("\n")}\n- Opening hours can change on holidays; if hours are not listed above, tell the customer to check the store page on the website or call.\n- Newmarket is the clearance / outlet store with shorter hours; Richmond Hill and Ottawa carry the full winter range and do tuning on site.`,
       );
-      if (data.shop.shippingPolicy?.body) await put("policy_shipping_official", "Official shipping policy (website text)", "policy", 11, stripHtml(data.shop.shippingPolicy.body).slice(0, 6000), "https://borderlinestore.ca/policies/shipping-policy");
-      if (data.shop.refundPolicy?.body) await put("policy_refund_official", "Official refund policy (website text)", "policy", 31, stripHtml(data.shop.refundPolicy.body).slice(0, 6000), "https://borderlinestore.ca/policies/refund-policy");
+      const pol = (t: string) => data.shop.shopPolicies.find((x) => x.type === t)?.body;
+      if (pol("SHIPPING_POLICY")) await put("policy_shipping_official", "Official shipping policy (website text)", "policy", 11, stripHtml(pol("SHIPPING_POLICY")).slice(0, 6000), "https://borderlinestore.ca/policies/shipping-policy");
+      if (pol("REFUND_POLICY")) await put("policy_refund_official", "Official refund policy (website text)", "policy", 31, stripHtml(pol("REFUND_POLICY")).slice(0, 6000), "https://borderlinestore.ca/policies/refund-policy");
     } catch (e) {
       console.warn("[support] seed from Shopify failed:", (e as Error).message);
     }
