@@ -10,6 +10,7 @@
 .blsc--right .blsc__panel{right:0}.blsc--left .blsc__panel{left:0;transform-origin:bottom left}
 @keyframes blsc-in{from{opacity:0;transform:translateY(8px) scale(.98)}to{opacity:1;transform:none}}
 .blsc__head{display:flex;align-items:center;gap:10px;padding:14px 14px 12px;background:var(--blsc-accent);color:#fff}
+.blsc__head svg{width:22px;height:22px;flex:none}
 .blsc__head b{font-size:15px}
 .blsc__head small{display:block;opacity:.75;font-size:12px;font-weight:400}
 .blsc__close{margin-left:auto;background:none;border:0;color:#fff;font-size:22px;line-height:1;cursor:pointer;padding:4px 6px;opacity:.85}
